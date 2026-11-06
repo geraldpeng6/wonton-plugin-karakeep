@@ -15,7 +15,9 @@
 SSO=oidc
 MCP=0
 
-web_assert() { grep -qi '<title>karakeep\|karakeep'; }
+# 页面标记用 <title>：核心的登录页/错误页不会以 Karakeep 为标题（但跳转参数里可能带插件地址，
+# 所以不能只 grep 'karakeep' 词）。
+web_assert() { grep -qE '<title[^>]*>[Kk]arakeep'; }
 
 # ---------- 探针内部用的上下文：套件（dev.sh probes）和 e2e 都能跑 ----------
 # 在探针开始时求值：套件先 source 本文件、后来才设 SMOKE_WEB_URL 这些变量，不能在文件加载时取。
@@ -103,6 +105,7 @@ data_write() { # 写一条真实书签（文字书签，内容带时间戳），
 }
 
 data_check() { # 断言 data_write 写的书签还在、内容一字不差
+  kk_init || return 1
   [[ -s "$kk_file" ]] || { echo "探针状态里没有书签：先跑 data_write"; return 1; }
   # shellcheck source=/dev/null
   . "$kk_file"
