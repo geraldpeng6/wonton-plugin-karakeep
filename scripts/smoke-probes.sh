@@ -95,7 +95,7 @@ data_write() { # 写一条真实书签（文字书签，内容带时间戳），
   text="云吞 e2e 数据探针 $(date +%Y%m%d%H%M%S)"
   resp="$(curl -fsS --noproxy '*' -X POST \
     -H "Authorization: Bearer $KK_API_KEY" -H 'Content-Type: application/json' \
-    --data "$(jq -cn --arg t "$text" '{type:"text",text:{text:$t}}')" \
+    --data "$(jq -cn --arg t "$text" '{type:"text",text:$t}')" \
     "$kk_web/api/v1/bookmarks")" || { echo "建书签失败"; return 1; }
   id="$(jq -r '.id // empty' <<<"$resp")"
   [[ -n "$id" ]] || { echo "建书签响应没有 id：$(head -c 200 <<<"$resp")"; return 1; }
