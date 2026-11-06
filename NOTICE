@@ -1,29 +1,25 @@
 图标
 ====
 
-`icon.svg` 为本仓库原创，按插件规范的线条风格手写，未用图片模型生成。从模板新建的插件换成自己的图标时，这里按实际情况重写。
+`icon.png` 使用 Karakeep 官方标志（上游仓库 `apps/web/public/icons/logo-512.png`，原样缩放未改色），
+按上游 PWA 清单的 `background_color` 放在白色底上以填满正方形。未用图片模型生成。
+
+Karakeep 名称和标志是 Karakeep 项目及其权利人的商标；本插件是独立维护的云吞插件包，
+不代表上游官方出品、合作或背书。
 
 许可证
 ------
 
-MIT License
+上游应用的许可证：GNU Affero General Public License v3.0（AGPL-3.0-only），
+上游仓库 https://github.com/karakeep-app/karakeep。
 
-Copyright (c) 2026 Wonton plugin authors
+本插件包（compose 清单、探针脚本、本文档等）的许可证见仓库的 LICENSE（MIT）。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+第三方镜像
+----------
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+- `ghcr.io/karakeep-app/karakeep`：Karakeep 官方镜像，AGPL-3.0-only。
+- `ghcr.io/karakeep-app/karakeep-chrome`：Karakeep 官方构建的无头浏览器镜像，AGPL-3.0-only；
+  amd64 含 Google Chrome（Google Chrome 商标归 Google LLC 所有），arm64 用 Debian 的 Chromium。
+- `getmeili/meilisearch`：Meilisearch 官方镜像，上游许可证为 `MIT AND BUSL-1.1`
+  （开源部分 MIT，企业版部分 Business Source License 1.1）。
