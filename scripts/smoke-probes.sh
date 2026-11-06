@@ -11,18 +11,23 @@
 
 # sso=oidc：打开网页自动跳云吞登录（DISABLE_PASSWORD_AUTH + OAUTH_AUTO_REDIRECT）。
 # 清单没有 mcp：上游 MCP 镜像只支持 stdio 传输，云吞只收 streamable-http（取舍见 README / PR）。
+# shellcheck disable=SC2034  # SSO/MCP 由冒烟套件读取
 SSO=oidc
 MCP=0
 
 web_assert() { grep -qi '<title>karakeep\|karakeep'; }
 
 # ---------- 探针内部用的上下文：套件（dev.sh probes）和 e2e 都能跑 ----------
-kk_dir="${E2E_DIR:-$SMOKE_DIR}"
-kk_state="$kk_dir/.wonton"
-kk_file="$kk_state/probe.env"                                 # API key、书签 id 和写入内容
-kk_web="${E2E_WEB_URL:-$SMOKE_WEB_URL}"
-# dweb 写会话进的 jar：套件里是 SMOKE_JAR，e2e 里是 dev.sh web 的默认 jar。
-kk_jar="${SMOKE_JAR:-$kk_state/session.cookies}"
+# 在探针开始时求值：套件先 source 本文件、后来才设 SMOKE_WEB_URL 这些变量，不能在文件加载时取。
+kk_init() { # 出错时说明原因并返回 1
+  kk_dir="${E2E_DIR:-$SMOKE_DIR}"
+  kk_state="$kk_dir/.wonton"
+  kk_file="$kk_state/probe.env"                               # API key、书签 id 和写入内容
+  kk_web="${E2E_WEB_URL:-$SMOKE_WEB_URL}"
+  # dweb 写会话进的 jar：套件里是 SMOKE_JAR，e2e 里是 dev.sh web 的默认 jar。
+  kk_jar="${SMOKE_JAR:-$kk_state/session.cookies}"
+  [[ -n "$kk_web" ]] || { echo "拿不到插件网页地址（SMOKE_WEB_URL / E2E_WEB_URL 都为空）"; return 1; }
+}
 
 kk_owner_email() { # 核心注入的主人邮箱：套件里是环境变量，e2e 在实例 .env 里
   if [[ -n "${WONTON_OWNER_EMAIL:-}" ]]; then
@@ -64,6 +69,7 @@ kk_key_ok() { # 旧 key 还能用（数据库在升级和重装后都保留）
 }
 
 kk_prepare() { # 登录链 + 可用的 API key
+  kk_init || return 1
   kk_walk || return 1
   kk_key_ok && return 0
   KK_API_KEY="$(kk_key_create)" || return 1
