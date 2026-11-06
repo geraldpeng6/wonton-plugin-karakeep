@@ -53,8 +53,9 @@ services:
       - --window-size=1440,900
     # 镜像里没有 curl/wget（上游有意裁掉），用 bash 的 /dev/tcp 探 DevTools 接口；
     # /json/version 能答出 Browser 字段，说明 Chrome 真的在服务，不只是端口开着。
+    # 必须 HTTP/1.1 且带 Host（DevTools 服务器拒 HTTP/1.0，2026-11-07 e2e 实测），Host 只认 IP 或 localhost。
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9222 && printf \"GET /json/version HTTP/1.0\r\n\r\n\" >&3 && grep -q Browser <&3"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9222 && printf \"GET /json/version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n\" >&3 && grep -q Browser <&3"]
       interval: 30s
       timeout: 10s
       start_period: 60s
