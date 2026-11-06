@@ -21,12 +21,17 @@ MCP=0
 # 所以不能只 grep 'karakeep' 词）。
 web_assert() { grep -qE '<title[^>]*>[Kk]arakeep'; }
 
-# ---------- 探针内部助手：只用套件保证的变量和 dweb ----------
-kk_login() { # 走完 OIDC：应用自动跳身份方，核心会话在 jar 里时一路 302 回到应用并建好应用会话
-  local try final
+# ---------- 探针内部助手：只用套件保证的变量 ----------
+kk_login() { # 主人会话种进 SMOKE_JAR，再走完 OIDC：应用自动跳身份方，核心会话在时一路 302 回到应用并建好应用会话。
+  # 不用 dweb：它写 dev.sh 的默认 jar，e2e 里和 SMOKE_JAR 不是同一个文件（data_write 跑在套件 web_login 之前）。
+  local try final page
   for try in 1 2 3; do
-    final="$(dweb --sso /)" || final=""
-    grep -qE '<title[^>]*>[Kk]arakeep' <<<"$final" && return 0
+    curl -sS --noproxy '*' -o /dev/null -c "$SMOKE_JAR" \
+      --data-urlencode "token=$SMOKE_TOKEN" "$SMOKE_BASE/_wonton/login" || { sleep 10; continue; }
+    final="$(curl -sS --noproxy '*' -o /dev/null -w '%{url_effective}' -L --max-redirs 30 \
+      -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/")" || final=""
+    page="$(curl -sS --noproxy '*' -L --max-redirs 10 -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$SMOKE_WEB_URL/")" || page=""
+    grep -qE '<title[^>]*>[Kk]arakeep' <<<"$page" && return 0
     (( try < 3 )) && sleep 10
   done
   echo "OIDC 登录链没有落到应用：$(head -c 120 <<<"$final")"
