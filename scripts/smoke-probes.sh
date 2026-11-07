@@ -37,17 +37,20 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
 
 kk_login() { # 主人会话种进 SMOKE_JAR，再走完 OIDC：应用自动跳身份方，核心会话在时一路 302 回到应用并建好应用会话。
   # 不用 dweb：它写 dev.sh 的默认 jar，e2e 里和 SMOKE_JAR 不是同一个文件（data_write 跑在套件 web_login 之前）。
+  # 成功的判据是 jar 里真的有应用会话 cookie（better-auth.session_token）：Karakeep 的登录/错误页标题也是 Karakeep，
+  # 只看标题会把没登录当成走通了（2026-11-07 e2e 实测 401）。
   local try final page
   for try in 1 2 3; do
     curl -sS --noproxy '*' -o /dev/null -c "$SMOKE_JAR" \
       --data-urlencode "token=$SMOKE_TOKEN" "$SMOKE_BASE/_wonton/login" || { sleep 10; continue; }
-    final="$(curl -sS --noproxy '*' -o /dev/null -w '%{url_effective}' -L --max-redirs 30 \
+    final="$(curl -sS --noproxy '*' -o /dev/null -w '%{url_effective} 跳了%{num_redirects}次' -L --max-redirs 30 \
       -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/")" || final=""
+    grep -q better-auth "$SMOKE_JAR" && return 0
     page="$(curl -sS --noproxy '*' -L --max-redirs 10 -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$SMOKE_WEB_URL/")" || page=""
-    grep -qE '<title[^>]*>[Kk]arakeep' <<<"$page" && return 0
+    grep -qE '<title[^>]*>[Kk]arakeep' <<<"$page" || final="页面标题都不对：$(head -c 120 <<<"$page")"
     (( try < 3 )) && sleep 10
   done
-  echo "OIDC 登录链没有落到应用：$(head -c 120 <<<"$final")"
+  echo "OIDC 登录链没建立应用会话（落点 $final）"
   return 1
 }
 
@@ -95,8 +98,15 @@ identity_check() { # 应用认出的是主人本人：/api/v1/users/me 的名字
   local me
   me="$(curl -fsS --noproxy '*' -H "Authorization: Bearer $KK_API_KEY" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
     { echo "users/me 请求失败"; return 1; }
-  jq -e --arg owner "$SMOKE_OWNER" '.localUser == false and .name == $owner' <<<"$me" >/dev/null ||
-    { echo "当前用户不是主人 $SMOKE_OWNER：$(head -c 200 <<<"$me")"; return 1; }
+  # 主人名非空才比对（e2e 直调未导出时兜底也可能为空；localUser==false 已证明是 OIDC 建的号）。
+  if [[ -n "$SMOKE_OWNER" ]]; then
+    jq -e --arg owner "$SMOKE_OWNER" '.localUser == false and .name == $owner' <<<"$me" >/dev/null ||
+      { echo "当前用户不是主人 $SMOKE_OWNER：$(head -c 200 <<<"$me")"; return 1; }
+  else
+    echo "SMOKE_OWNER 未导出，未断言用户名，只断言 OIDC 用户" >&2
+    jq -e '.localUser == false' <<<"$me" >/dev/null ||
+      { echo "当前用户是本地密码账号：$me"; return 1; }
+  fi
 }
 
 data_write() { # 写一条真实书签（文字书签，内容带时间戳），id 和内容随标记文件覆盖写
