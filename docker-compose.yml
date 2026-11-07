@@ -38,7 +38,8 @@ services:
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 15s
+      retries: 5
       start_period: 120s
       start_interval: 3s
 
@@ -58,6 +59,7 @@ services:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9222 && printf \"GET /json/version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n\" >&3 && grep -q Browser <&3"]
       interval: 30s
       timeout: 10s
+      retries: 5
       start_period: 60s
       start_interval: 2s
 
@@ -72,6 +74,7 @@ services:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7700/health"]
       interval: 30s
       timeout: 5s
+      retries: 5
       start_period: 60s
       start_interval: 2s
 

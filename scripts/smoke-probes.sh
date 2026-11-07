@@ -35,13 +35,17 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
   done
 }
 
-kk_app_log_tail() { # 诊断用（负责人要求）：抓 karakeep 应用容器最后 50 行，看 better-auth 服务端取签发方文档是否失败
-  local host inst c
-  host="$(sed 's#https\?://##;s#[/:].*##' <<<"${SMOKE_WEB_URL:-}")"
-  inst="$(cut -d. -f2 <<<"$host")"
-  c="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -x "wonton-$inst--karakeep--web")" || c=""
+kk_app_log_tail() { # 诊断用（负责人要求）：应用容器日志最后 50 行 + 三个容器的健康状态；503 复现时这些和 x-wonton-error 一起写 .stop
+  local c
+  echo "===== karakeep 三个容器健康状态（docker inspect）=====" >&2
+  for c in web chrome meilisearch; do
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -E "karakeep--$c($|_)" | head -1 | while read -r c; do
+      echo "$c: $(docker inspect --format '{{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} 连败={{if .State.Health}}{{.State.Health.FailingStreak}}{{else}}0{{end}}' "$c" 2>/dev/null || echo "inspect 拿不到")" >&2
+    done
+  done
+  c="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "karakeep--web($|_)" | head -1)" || c=""
   if [[ -z "$c" ]]; then
-    echo "诊断：karakeep 容器日志拿不到（inst=$inst，docker 不在本机或容器不在跑）" >&2
+    echo "诊断：karakeep 应用容器日志拿不到（docker 不在本机或容器不在跑）" >&2
     return 0
   fi
   echo "===== karakeep 容器（$c）最后 50 行 =====" >&2
