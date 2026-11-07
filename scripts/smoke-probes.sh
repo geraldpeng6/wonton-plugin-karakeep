@@ -48,10 +48,25 @@ kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测�
   for try in 1 2 3; do
     dweb --sso / >/dev/null 2>&1 || true
     grep -q wonton. "$SMOKE_JAR" || { (( try < 3 )) && sleep 10; continue; }
-    resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' \
-      -H "Origin: $SMOKE_WEB_URL" --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' \
-      -w $'\nHTTP:%{http_code}' "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
+    # 先试 GET 形式（better-auth 部分路由接受 GET+query；网关 503 拦的是带 body 的 POST 时，GET 能绕开），
+    # 不行再 POST（登录按钮的实际请求）。
+    resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+      -w $'\nHTTP:%{http_code} LOC:%{redirect_url}' \
+      "$SMOKE_WEB_URL/api/auth/sign-in/social?provider=custom&callbackUrl=/" 2>&1)" || resp=""
     oauth_url="$(jq -re '.url // empty' <<<"$resp" 2>/dev/null)" || oauth_url=""
+    if [[ -z "$oauth_url" && "$resp" == *'HTTP:302'* ]]; then
+      oauth_url="$(sed -n 's/.*LOC:\([^ ]*\).*/\1/p' <<<"$resp")"
+    fi
+    if [[ -z "$oauth_url" ]]; then
+      echo "GET 形式没拿到 provider 地址（$(tail -1 <<<"$resp")），改 POST" >&2
+      resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' \
+        -H "Origin: $SMOKE_WEB_URL" --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' \
+        -w $'\nHTTP:%{http_code} LOC:%{redirect_url}' "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
+      oauth_url="$(jq -re '.url // empty' <<<"$resp" 2>/dev/null)" || oauth_url=""
+      if [[ -z "$oauth_url" && "$resp" == *'HTTP:302'* ]]; then
+        oauth_url="$(sed -n 's/.*LOC:\([^ ]*\).*/\1/p' <<<"$resp")"
+      fi
+    fi
     if [[ -z "$oauth_url" ]]; then
       echo "social 响应：$(tail -1 <<<"$resp") 正文：$(head -c 200 <<<"$resp")" >&2
       (( try < 3 )) && sleep 10

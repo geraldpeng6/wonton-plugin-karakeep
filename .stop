@@ -1,0 +1,38 @@
+# karakeep 插件：.stop——e2e 身份/数据两项被网关行为卡住
+
+## 已通过（PR geraldpeng6/wonton-plugin-karakeep#1，头部 0383fac→dee05eb）
+
+- 装得上 PASS（check --official + install + running healthy，多台分流机一致）
+- 网页打得开 PASS（真实页面特征 + 匿名 401）
+- 工具 N/A（清单无 mcp：上游 MCP 镜像只有 stdio，取舍在 PR）
+- CI check 绿；spec 0.6、PR diff 无套件文件、dependabot 忽略 Meilisearch 大版本（三条自查完成）
+
+## 卡住的是什么
+
+主人身份能用、升级/重装保数据（identity_check / data_write）需要一个**应用会话**（better-auth 的
+session cookie），而它只能经 OAuth 登录链建立。逐轮实测定位到：
+
+1. karakeep 的 OAuth 自动跳转是客户端 JS（`signIn.social` → better-auth），curl 跟重定向到
+   /signin 就停——纯 curl 走不通，这是插件无关的机制问题。
+2. 改为手动发应用登录按钮的同一个请求 `POST /api/auth/sign-in/social`（better-auth，v0.34.1
+   登录按钮的实际端点），需要会话 jar。
+3. 会话 jar 的核心会话：裸 token POST 得 303 但**不发任何 cookie**（jar 为空、同 jar GET 插件域
+   401——已实测）；必须走 dev.sh 的表单登录回退（`dweb --sso` + `WONTON_DEV_JAR` 指向
+   SMOKE_JAR），这一步现在通了：同 jar GET 插件首页 200，网关认会话。
+4. **卡点**：同 jar、同会话，`POST /api/auth/sign-in/social`（Origin=插件地址，同源）被核心网关
+   返回 **503 + 网关自己的错误页**（"出错了 · Wonton"，连试 3 次稳定复现，两台分流机一致）；
+   同 jar 的 GET 却正常转发到应用。无伪造 Sec-Fetch 头的干净 POST 也一样。
+
+## 需要负责人判定的
+
+1. **浏览器实测一次**：起一套 e2e 实例，浏览器打开插件网页，走一遍"Sign in with 云吞"，
+   确认 karakeep 的 OAuth 链路本身是否成立（若浏览器同样失败，是我的 compose/环境问题，我来修；
+   若浏览器成功，则 curl 路线缺了某个浏览器才有的环节，需要指点）。
+2. 或者告知：核心网关对"同源、带会话、POST + JSON body 到插件子域"的语义——503 的判定条件
+   是什么？如果网关不允许这类 POST（路由实现限制），探针这条路就堵死了，请给替代测法。
+
+## 我这边的现状
+
+- 钩子已按契约写好并全部推送（dee05eb + 后续诊断提交）；一旦上面两点有答案，
+  把 kk_login 的 POST 换成可行路径即可，data 钩子（走 run_hook，契约变量齐全）应能直接过。
+- 其余五项证据都齐；PR 正文会在收到答复后一并回填。
