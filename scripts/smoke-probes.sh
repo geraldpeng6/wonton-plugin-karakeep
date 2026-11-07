@@ -44,8 +44,10 @@ kk_login() { # 主人会话种进 SMOKE_JAR，再手动走一遍应用自己的 
   local try oauth_url page
   for try in 1 2 3; do
     curl -sS --noproxy '*' -o /dev/null -c "$SMOKE_JAR"       --data-urlencode "token=$SMOKE_TOKEN" "$SMOKE_BASE/_wonton/login" || { sleep 10; continue; }
-    oauth_url="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' "$SMOKE_WEB_URL/api/auth/sign-in/social" | jq -r '.url // empty')" || oauth_url=""
-    [[ -n "$oauth_url" ]] || { echo "OAuth 发起请求没返回 provider 地址" >&2; sleep 10; continue; }
+    resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' -w '\nHTTP:%{http_code} LOC:%{redirect_url}' "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
+    oauth_url="$(jq -re '.url // empty' <<<"$resp" 2>/dev/null)" || oauth_url=""
+    [[ -z "$oauth_url" && "$resp" == *'HTTP:302'* ]] && oauth_url="$(sed -n 's/.*LOC:\([^ ]*\).*/\1/p' <<<"$resp")"
+    [[ -n "$oauth_url" ]] || { echo "social 端点响应：$(head -c 300 <<<"$resp")" >&2; sleep 10; continue; }
     page="$(curl -sS --noproxy '*' -o /dev/null -w '%{url_effective}' -L --max-redirs 30       -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$oauth_url")" || page=""
     grep -q better-auth "$SMOKE_JAR" &&
       curl -fsS --noproxy '*' -o /dev/null -b "$SMOKE_JAR" "$SMOKE_WEB_URL/api/v1/users/me" && return 0
