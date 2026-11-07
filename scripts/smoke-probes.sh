@@ -35,6 +35,20 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
   done
 }
 
+kk_app_log_tail() { # 诊断用（负责人要求）：抓 karakeep 应用容器最后 50 行，看 better-auth 服务端取签发方文档是否失败
+  local host inst c
+  host="$(sed 's#https\?://##;s#[/:].*##' <<<"${SMOKE_WEB_URL:-}")"
+  inst="$(cut -d. -f2 <<<"$host")"
+  c="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -x "wonton-$inst--karakeep--web")" || c=""
+  if [[ -z "$c" ]]; then
+    echo "诊断：karakeep 容器日志拿不到（inst=$inst，docker 不在本机或容器不在跑）" >&2
+    return 0
+  fi
+  echo "===== karakeep 容器（$c）最后 50 行 =====" >&2
+  docker logs --tail 50 "$c" 2>&1 | tail -50 >&2
+  echo "===== 容器日志完 =====" >&2
+}
+
 kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测的结论）：
   # 1) 核心会话：token POST 返回 303 但不发 cookie（jar 为空，同 jar GET 插件域 401），
   #    必须走 dev.sh 的表单登录回退——用 dweb，并把它写会话的 jar 指到 SMOKE_JAR
@@ -45,22 +59,31 @@ kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测�
   kk_init || return 1
   export WONTON_DEV_JAR="$SMOKE_JAR"
   local try resp oauth_url
+  # 诊断（负责人要求）：SMOKE_WEB_URL 与 dweb 实际用的地址是否同一实例同一 slug
+  echo "诊断：SMOKE_WEB_URL=$SMOKE_WEB_URL" >&2
   for try in 1 2 3; do
     dweb --sso / >/dev/null 2>&1 || true
+    echo "诊断：dweb 实际地址=$(dweb / -s -o /dev/null -w '%{url_effective}' 2>/dev/null)" >&2
     grep -q wonton. "$SMOKE_JAR" || { (( try < 3 )) && sleep 10; continue; }
     # 手动发应用登录按钮的同一个请求（OAuth 自动跳转是客户端 JS，curl 触发不了）。
     # 失败即停：登录链走不通就如实报错，不做任何绕网关的变体（POST 503 是底座缺陷，等底座修）。
+    hdrs="$(mktemp)"
     resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -X POST \
       -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" \
       --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' \
-      -w $'\nKKMETA:%{http_code} LOC:%{redirect_url}' "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
+      -D "$hdrs" -w $'\nKKMETA:%{http_code} LOC:%{redirect_url}' \
+      "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
     body="${resp%$'\nKKMETA'*}" meta="${resp##*$'\nKKMETA'}"
+    werr="$(grep -i '^x-wonton-error:' "$hdrs" 2>/dev/null | tr -d '\r')" || werr=""
+    rm -f "$hdrs"
+    echo "诊断：social POST 状态 $(echo "$meta" | cut -d' ' -f1)，x-wonton-error=${werr:-无（非网关错误页，可能是应用自己回的）}" >&2
     oauth_url="$(jq -re '.url // empty' <<<"$body" 2>/dev/null)" || oauth_url=""
     if [[ -z "$oauth_url" && "$meta" == 302* ]]; then
       oauth_url="${meta#*LOC:}"
     fi
     if [[ -z "$oauth_url" ]]; then
       echo "social 端点没返回 provider 地址（HTTP $(echo "$meta" | cut -d' ' -f1)），正文：$(head -c 120 <<<"$body")" >&2
+      kk_app_log_tail
       (( try < 3 )) && sleep 10
       continue
     fi
@@ -74,6 +97,7 @@ kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测�
     (( try < 3 )) && sleep 10
   done
   echo "OIDC 登录链没建立应用会话" >&2
+  kk_app_log_tail
   return 1
 }
 
