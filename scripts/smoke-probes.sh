@@ -36,7 +36,7 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
 }
 
 kk_login() { # 主人会话种进 SMOKE_JAR，再手动走一遍应用自己的 OAuth 发起请求建立应用会话。
-  # 应用的“自动跳转”是客户端 JS（signIn() → POST /api/auth/sign-in/oauth2 → 浏览器跳 provider），
+  # 应用的“自动跳转”是客户端 JS（signIn() → POST /api/auth/sign-in/social → 浏览器跳 provider），
   # curl 跟重定向到 /signin 就停了（2026-11-07 e2e 实测），所以这里手动发这个 POST 拿 provider 地址，
   # 带 jar 走 Hydra（jar 里有核心会话）→ 回调换 code 建会话。成功判据：jar 里出现 better-auth 会话 cookie
   # 且 /api/v1/users/me 返回 200（Karakeep 登录页的标题也是 Karakeep，只看标题会假阳性）。
