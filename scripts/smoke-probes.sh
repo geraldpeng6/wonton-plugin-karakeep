@@ -22,16 +22,21 @@ MCP=0
 web_assert() { grep -qE '<title[^>]*>[Kk]arakeep'; }
 
 # ---------- 探针内部助手：只用套件保证的变量 ----------
-kk_env() { # 套件保证的变量在不在；缺了如实报错（e2e 的 identity_check 不走 run_hook 导出，set -u 下不能裸引用）
-  local need=("$@") name
-  for name in "${need[@]}"; do
-    [[ -n "${!name:-}" ]] || { echo "套件没有导出 \$$name（identity_check 不经 run_hook 的导出？）"; return 1; }
+kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 run_hook 的 SMOKE_* 导出（底座缺口，见 PR），
+  # 过渡期回退到同值的 E2E_*；套件在直调前补导出后这里自动只用 SMOKE_*，兜底可删。
+  SMOKE_JAR="${SMOKE_JAR:-${E2E_JAR:-}}"
+  SMOKE_WEB_URL="${SMOKE_WEB_URL:-${E2E_WEB_URL:-}}"
+  SMOKE_OWNER="${SMOKE_OWNER:-${E2E_OWNER:-}}"
+  SMOKE_BASE="${SMOKE_BASE:-${E2E_BASE:-}}"
+  SMOKE_TOKEN="${SMOKE_TOKEN:-${E2E_TOKEN:-}}"
+  local name
+  for name in SMOKE_JAR SMOKE_WEB_URL SMOKE_BASE SMOKE_TOKEN; do
+    [[ -n "${!name:-}" ]] || { echo "套件没有给 \$$name（SMOKE_* 与 E2E_* 都为空）"; return 1; }
   done
 }
 
 kk_login() { # 主人会话种进 SMOKE_JAR，再走完 OIDC：应用自动跳身份方，核心会话在时一路 302 回到应用并建好应用会话。
   # 不用 dweb：它写 dev.sh 的默认 jar，e2e 里和 SMOKE_JAR 不是同一个文件（data_write 跑在套件 web_login 之前）。
-  kk_env SMOKE_JAR SMOKE_BASE SMOKE_TOKEN SMOKE_WEB_URL || return 1
   local try final page
   for try in 1 2 3; do
     curl -sS --noproxy '*' -o /dev/null -c "$SMOKE_JAR" \
@@ -48,13 +53,13 @@ kk_login() { # 主人会话种进 SMOKE_JAR，再走完 OIDC：应用自动跳�
 
 kk_key_create() { # 经应用自己的设置接口建 API key（和网页“设置 → API 密钥”是同一个请求，superjson 格式）
   local resp
-  resp="$(curl -sS --noproxy '*' -X POST -b "${SMOKE_JAR:-}" -c "${SMOKE_JAR:-}" \
-    -H 'Content-Type: application/json' -H "Origin: ${SMOKE_WEB_URL:-}" -H "Referer: ${SMOKE_WEB_URL:-}" \
+  resp="$(curl -sS --noproxy '*' -X POST -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+    -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" -H "Referer: $SMOKE_WEB_URL/" \
     --data '{"0":{"json":{"name":"wonton-e2e"}}}' \
-    "${SMOKE_WEB_URL:-}/api/trpc/apiKeys.create?batch=1")" || { echo "apiKeys.create 请求失败"; return 1; }
+    "$SMOKE_WEB_URL/api/trpc/apiKeys.create?batch=1")" || { echo "apiKeys.create 请求失败：$resp" >&2; return 1; }
   local key
   key="$(jq -re '.[0].result.data.json.key // empty' <<<"$resp" 2>/dev/null)" || key=""
-  [[ -n "$key" ]] || { echo "apiKeys.create 响应里没有 key：$(head -c 200 <<<"$resp")"; return 1; }
+  [[ -n "$key" ]] || { echo "apiKeys.create 响应里没有 key：$(head -c 200 <<<"$resp")" >&2; return 1; }
   printf '%s\n' "$key"
 }
 
@@ -85,7 +90,7 @@ kk_prepare() { # 登录链 + 可用的 API key（标记里的优先，失效就�
 }
 
 identity_check() { # 应用认出的是主人本人：/api/v1/users/me 的名字是主人，且是 OIDC 建的号（非本地密码账号）
-  kk_env SMOKE_OWNER || return 1
+  kk_init || return 1
   kk_prepare || { echo "登录或建 API key 失败"; return 1; }
   local me
   me="$(curl -fsS --noproxy '*' -H "Authorization: Bearer $KK_API_KEY" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
@@ -95,6 +100,7 @@ identity_check() { # 应用认出的是主人本人：/api/v1/users/me 的名字
 }
 
 data_write() { # 写一条真实书签（文字书签，内容带时间戳），id 和内容随标记文件覆盖写
+  kk_init || return 1
   kk_prepare || { echo "登录或建 API key 失败"; return 1; }
   local text id resp
   text="云吞 e2e 数据探针 $(date +%Y%m%d%H%M%S)"
@@ -108,6 +114,7 @@ data_write() { # 写一条真实书签（文字书签，内容带时间戳），
 }
 
 data_check() { # 断言 data_write 写的书签还在、内容一字不差
+  kk_init || return 1
   [[ -f ${SMOKE_STATE:-} && -s "$SMOKE_STATE" ]] || { echo "标记文件里没有数据：先跑 data_write"; return 1; }
   # shellcheck source=/dev/null
   . "$SMOKE_STATE"
