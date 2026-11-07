@@ -22,8 +22,16 @@ MCP=0
 web_assert() { grep -qE '<title[^>]*>[Kk]arakeep'; }
 
 # ---------- 探针内部助手：只用套件保证的变量 ----------
+kk_env() { # 套件保证的变量在不在；缺了如实报错（e2e 的 identity_check 不走 run_hook 导出，set -u 下不能裸引用）
+  local need=("$@") name
+  for name in "${need[@]}"; do
+    [[ -n "${!name:-}" ]] || { echo "套件没有导出 \$$name（identity_check 不经 run_hook 的导出？）"; return 1; }
+  done
+}
+
 kk_login() { # 主人会话种进 SMOKE_JAR，再走完 OIDC：应用自动跳身份方，核心会话在时一路 302 回到应用并建好应用会话。
   # 不用 dweb：它写 dev.sh 的默认 jar，e2e 里和 SMOKE_JAR 不是同一个文件（data_write 跑在套件 web_login 之前）。
+  kk_env SMOKE_JAR SMOKE_BASE SMOKE_TOKEN SMOKE_WEB_URL || return 1
   local try final page
   for try in 1 2 3; do
     curl -sS --noproxy '*' -o /dev/null -c "$SMOKE_JAR" \
@@ -40,10 +48,10 @@ kk_login() { # 主人会话种进 SMOKE_JAR，再走完 OIDC：应用自动跳�
 
 kk_key_create() { # 经应用自己的设置接口建 API key（和网页“设置 → API 密钥”是同一个请求，superjson 格式）
   local resp
-  resp="$(curl -sS --noproxy '*' -X POST -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
-    -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" -H "Referer: $SMOKE_WEB_URL/" \
+  resp="$(curl -sS --noproxy '*' -X POST -b "${SMOKE_JAR:-}" -c "${SMOKE_JAR:-}" \
+    -H 'Content-Type: application/json' -H "Origin: ${SMOKE_WEB_URL:-}" -H "Referer: ${SMOKE_WEB_URL:-}" \
     --data '{"0":{"json":{"name":"wonton-e2e"}}}' \
-    "$SMOKE_WEB_URL/api/trpc/apiKeys.create?batch=1")" || { echo "apiKeys.create 请求失败"; return 1; }
+    "${SMOKE_WEB_URL:-}/api/trpc/apiKeys.create?batch=1")" || { echo "apiKeys.create 请求失败"; return 1; }
   local key
   key="$(jq -re '.[0].result.data.json.key // empty' <<<"$resp" 2>/dev/null)" || key=""
   [[ -n "$key" ]] || { echo "apiKeys.create 响应里没有 key：$(head -c 200 <<<"$resp")"; return 1; }
@@ -55,7 +63,7 @@ kk_key_ok() { # 标记文件里的 key 还能用（数据库在升级和重装�
   # shellcheck source=/dev/null
   . "$SMOKE_STATE"
   [[ -n "${KK_API_KEY:-}" ]] || return 1
-  curl -fsS --noproxy '*' -o /dev/null -H "Authorization: Bearer $KK_API_KEY" "$SMOKE_WEB_URL/api/v1/users/me"
+  curl -fsS --noproxy '*' -o /dev/null -H "Authorization: Bearer $KK_API_KEY" "${SMOKE_WEB_URL:-}/api/v1/users/me"
 }
 
 kk_state_write() { # 覆盖写标记文件；套件的 dev.sh probes 里 SMOKE_STATE 是状态目录（不跑数据钩子），跳过
@@ -77,9 +85,10 @@ kk_prepare() { # 登录链 + 可用的 API key（标记里的优先，失效就�
 }
 
 identity_check() { # 应用认出的是主人本人：/api/v1/users/me 的名字是主人，且是 OIDC 建的号（非本地密码账号）
+  kk_env SMOKE_OWNER || return 1
   kk_prepare || { echo "登录或建 API key 失败"; return 1; }
   local me
-  me="$(curl -fsS --noproxy '*' -H "Authorization: Bearer $KK_API_KEY" "$SMOKE_WEB_URL/api/v1/users/me")" ||
+  me="$(curl -fsS --noproxy '*' -H "Authorization: Bearer $KK_API_KEY" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
     { echo "users/me 请求失败"; return 1; }
   jq -e --arg owner "$SMOKE_OWNER" '.localUser == false and .name == $owner' <<<"$me" >/dev/null ||
     { echo "当前用户不是主人 $SMOKE_OWNER：$(head -c 200 <<<"$me")"; return 1; }
@@ -92,7 +101,7 @@ data_write() { # 写一条真实书签（文字书签，内容带时间戳），
   resp="$(curl -fsS --noproxy '*' -X POST \
     -H "Authorization: Bearer $KK_API_KEY" -H 'Content-Type: application/json' \
     --data "$(jq -cn --arg t "$text" '{type:"text",text:$t}')" \
-    "$SMOKE_WEB_URL/api/v1/bookmarks")" || { echo "建书签失败"; return 1; }
+    "${SMOKE_WEB_URL:-}/api/v1/bookmarks")" || { echo "建书签失败"; return 1; }
   id="$(jq -r '.id // empty' <<<"$resp")"
   [[ -n "$id" ]] || { echo "建书签响应没有 id：$(head -c 200 <<<"$resp")"; return 1; }
   kk_state_write "$KK_API_KEY" "$id" "$text"
@@ -105,7 +114,7 @@ data_check() { # 断言 data_write 写的书签还在、内容一字不差
   [[ -n "${KK_API_KEY:-}" && -n "${KK_BOOKMARK_ID:-}" && -n "${KK_BOOKMARK_TEXT:-}" ]] ||
     { echo "标记文件不完整：$SMOKE_STATE"; return 1; }
   local resp text
-  resp="$(curl -fsS --noproxy '*' -H "Authorization: Bearer $KK_API_KEY" "$SMOKE_WEB_URL/api/v1/bookmarks/$KK_BOOKMARK_ID")" ||
+  resp="$(curl -fsS --noproxy '*' -H "Authorization: Bearer $KK_API_KEY" "${SMOKE_WEB_URL:-}/api/v1/bookmarks/$KK_BOOKMARK_ID")" ||
     { echo "读书签 $KK_BOOKMARK_ID 失败"; return 1; }
   text="$(jq -r '.content.text // empty' <<<"$resp")"
   [[ "$text" == "$KK_BOOKMARK_TEXT" ]] ||
