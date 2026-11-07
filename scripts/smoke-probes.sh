@@ -48,7 +48,8 @@ kk_login() { # 主人会话种进 SMOKE_JAR，再手动走一遍应用自己的 
     coreline="$(grep -c wonton. "$SMOKE_JAR" 2>/dev/null || echo 0)"
     echo "核心登录 HTTP $code，jar 里 wonton 域 cookie ${coreline} 条" >&2
     resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' \
-      -H "Origin: $SMOKE_WEB_URL" --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' \
+      -H "Origin: $SMOKE_WEB_URL" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' \
+      --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' \
       -w $'\nHTTP:%{http_code} LOC:%{redirect_url}' "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
     oauth_url="$(jq -re '.url // empty' <<<"$resp" 2>/dev/null)" || oauth_url=""
     if [[ -z "$oauth_url" ]]; then
