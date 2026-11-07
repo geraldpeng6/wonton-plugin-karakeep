@@ -84,8 +84,9 @@ kk_health_dump() { # 全量落盘（钩子内同步执行，肯定能进冒烟�
   for c in web chrome meilisearch; do
     n="$(kk_health_pick "$c")"
     [[ -n "$n" ]] || { echo "（找不到 $c 容器）" >&2; continue; }
+    # 不能写 "2>/dev/null >&2"：stderr 先指到 /dev/null，stdout 再复制过去就进了 /dev/null（实测吞输出）
     echo "HEALTH-DUMP $n StartedAt=$(docker inspect -f '{{.State.StartedAt}}' "$n" 2>/dev/null)" >&2
-    docker inspect "$n" --format '{{json .State.Health}}' 2>/dev/null >&2
+    hj="$(docker inspect "$n" --format '{{json .State.Health}}' 2>/dev/null)" && echo "$hj" >&2
   done
 }
 
