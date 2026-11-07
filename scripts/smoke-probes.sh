@@ -37,23 +37,34 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
 
 kk_login() { # 主人会话种进 SMOKE_JAR，再手动走一遍应用自己的 OAuth 发起请求建立应用会话。
   # 应用的“自动跳转”是客户端 JS（signIn() → POST /api/auth/sign-in/social → 浏览器跳 provider），
-  # curl 跟重定向到 /signin 就停了（2026-11-07 e2e 实测），所以这里手动发这个 POST 拿 provider 地址，
+  # curl 跟重定向到 /signin 就停了（2026-11-07 e2e 实测），所以手动发这个 POST 拿 provider 地址，
   # 带 jar 走 Hydra（jar 里有核心会话）→ 回调换 code 建会话。成功判据：jar 里出现 better-auth 会话 cookie
-  # 且 /api/v1/users/me 返回 200（Karakeep 登录页的标题也是 Karakeep，只看标题会假阳性）。
+  # 且 /api/v1/users/me 返回 200。全程关键步骤都往 stderr 打，失败原因不用猜。
   # 不用 dweb：它写 dev.sh 的默认 jar，e2e 里和 SMOKE_JAR 不是同一个文件（data_write 跑在套件 web_login 之前）。
-  local try oauth_url page
+  local try code resp oauth_url coreline
   for try in 1 2 3; do
-    curl -sS --noproxy '*' -o /dev/null -c "$SMOKE_JAR"       --data-urlencode "token=$SMOKE_TOKEN" "$SMOKE_BASE/_wonton/login" || { sleep 10; continue; }
-    resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' -w '\nHTTP:%{http_code} LOC:%{redirect_url}' "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
+    code="$(curl -sS --noproxy '*' -o /dev/null -c "$SMOKE_JAR" -w '%{http_code}' \
+      --data-urlencode "token=$SMOKE_TOKEN" "$SMOKE_BASE/_wonton/login" 2>&1)" || code="curl错误:$code"
+    coreline="$(grep -c wonton. "$SMOKE_JAR" 2>/dev/null || echo 0)"
+    echo "核心登录 HTTP $code，jar 里 wonton 域 cookie ${coreline} 条" >&2
+    resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' \
+      -H "Origin: $SMOKE_WEB_URL" --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' \
+      -w $'\nHTTP:%{http_code} LOC:%{redirect_url}' "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
     oauth_url="$(jq -re '.url // empty' <<<"$resp" 2>/dev/null)" || oauth_url=""
-    [[ -z "$oauth_url" && "$resp" == *'HTTP:302'* ]] && oauth_url="$(sed -n 's/.*LOC:\([^ ]*\).*/\1/p' <<<"$resp")"
-    [[ -n "$oauth_url" ]] || { echo "social 端点响应：$(head -c 300 <<<"$resp")" >&2; sleep 10; continue; }
-    page="$(curl -sS --noproxy '*' -o /dev/null -w '%{url_effective}' -L --max-redirs 30       -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$oauth_url")" || page=""
-    grep -q better-auth "$SMOKE_JAR" &&
-      curl -fsS --noproxy '*' -o /dev/null -b "$SMOKE_JAR" "$SMOKE_WEB_URL/api/v1/users/me" && return 0
+    if [[ -z "$oauth_url" ]]; then
+      echo "social 响应：$(tail -1 <<<"$resp") 正文开头：$(head -c 200 <<<"$resp")" >&2
+      sleep 10
+      continue
+    fi
+    curl -sS --noproxy '*' -o /dev/null -L --max-redirs 30 -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$oauth_url" || true
+    if grep -q better-auth "$SMOKE_JAR" &&
+      curl -fsS --noproxy '*' -o /dev/null -b "$SMOKE_JAR" "$SMOKE_WEB_URL/api/v1/users/me"; then
+      return 0
+    fi
+    echo "走了 provider 但应用会话没建起来（jar better-auth cookie：$(grep -c better-auth "$SMOKE_JAR" 2>/dev/null || echo 0) 条）" >&2
     (( try < 3 )) && sleep 10
   done
-  echo "OIDC 登录链没建立应用会话（落点 ${page:-未知}）"
+  echo "OIDC 登录链没建立应用会话" >&2
   return 1
 }
 
