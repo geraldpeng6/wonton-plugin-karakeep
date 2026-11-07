@@ -35,50 +35,32 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
   done
 }
 
-kk_app_log_tail() { # 诊断用（负责人要求）：应用容器日志最后 50 行 + 三个容器的健康状态；503 复现时这些和 x-wonton-error 一起写 .stop
-  local c
-  echo "===== karakeep 三个容器健康状态（docker inspect）=====" >&2
-  for c in web chrome meilisearch; do
-    docker ps --format '{{.Names}}' 2>/dev/null | grep -E "karakeep--$c($|_)" | head -1 | while read -r c; do
-      echo "$c: $(docker inspect --format '{{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} 连败={{if .State.Health}}{{.State.Health.FailingStreak}}{{else}}0{{end}}' "$c" 2>/dev/null || echo "inspect 拿不到")" >&2
-    done
-  done
-  c="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "karakeep--web($|_)" | head -1)" || c=""
-  if [[ -z "$c" ]]; then
-    echo "诊断：karakeep 应用容器日志拿不到（docker 不在本机或容器不在跑）" >&2
-    return 0
-  fi
-  echo "===== karakeep 容器（$c）最后 50 行 =====" >&2
-  docker logs --tail 50 "$c" 2>&1 | tail -50 >&2
-  echo "===== 容器日志完 =====" >&2
+kk_health_pick() { # <svc>：兼容两种容器命名（compose 项目式 wonton-plugin-<名>-<svc>-1 / 规范式 wonton-<实例>--<名>--<svc>）
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -i "karakeep" |
+    grep -E "(--|[-_.])${1}([-_][0-9]+)?$" | head -1
 }
 
-kk_health_pick() { # <svc>：按实例名优先精确匹配本实例的容器，避免同机多轮冒烟串线
-  local inst
-  inst="$(sed 's#https\?://##;s#[/:].*##' <<<"${SMOKE_WEB_URL:-}" | cut -d. -f2)"
-  docker ps --format '{{.Names}}' 2>/dev/null | grep -E "(^wonton-$inst--|--)karakeep--$1($|_)" | head -1
-}
-
-kk_health_loop() { # 采样循环（kk_health_sampler 用 setsid 脱离后跑）：每 10s 记一行紧凑健康状态，容器清空自退。
-  # pid 幂等在循环里做：pid 文件活着就直接退，防止上一轮采样器还活着时重复起
-  local prog n h miss=0 found pf=/tmp/kk-health-sampler.pid
+kk_health_loop() { # 采样循环（kk_health_sampler 用 setsid 脱离后跑）：每 10s 记一行紧凑健康状态。
+  # 写文件不写 stderr：钩子返回后冒烟不再读它的输出管道，写了也会被 SIGPIPE 杀掉（11-07 实测）。
+  # pid 幂等：pid 文件活着就直接退；容器连续 3 次找不到就自退
+  local prog n h miss=0 found sf=/tmp/kk-health-sampler.log pf=/tmp/kk-health-sampler.pid
   [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null && exit 0
   echo $$ >"$pf"
   # shellcheck disable=SC2016  # prog 是 jq 程序，不能让 bash 展开
   prog='"\($t) \($n) \(.Status) streak=\(.FailingStreak) \(if (.Log|length)>0 then (.Log[-1] | "last探针: exit=\(.ExitCode) 起=\(.Start[11:23]) 止=\(.End[11:23]) 输出=\((.Output|gsub("\n";" ")|.[0:80]))") else "last探针: 无" end)"'
-  echo "HEALTH 采样开始 $(date +%H:%M:%S) pid=$$"
+  echo "HEALTH 采样开始 $(date +%H:%M:%S) pid=$$" >"$sf"
   while :; do
     found=0
     for c in web chrome meilisearch; do
-      n="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "karakeep--$c($|_)" | head -1)"
+      n="$(kk_health_pick "$c")"
       [[ -n "$n" ]] || continue
       found=1
       h="$(docker inspect "$n" --format '{{json .State.Health}}' 2>/dev/null)" || h=""
       [[ -n "$h" ]] || continue
-      jq -r --arg n "$n" --arg t "$(date +%H:%M:%S)" "$prog" <<<"$h"
+      jq -r --arg n "$n" --arg t "$(date +%H:%M:%S)" "$prog" <<<"$h" >>"$sf"
     done
     if (( found == 0 )); then
-      (( ++miss >= 3 )) && { echo "HEALTH 采样结束（容器已清）$(date +%H:%M:%S)"; return 0; }
+      (( ++miss >= 3 )) && { echo "HEALTH 采样结束（容器已清）$(date +%H:%M:%S)" >>"$sf"; return 0; }
     else
       miss=0
     fi
@@ -86,23 +68,43 @@ kk_health_loop() { # 采样循环（kk_health_sampler 用 setsid 脱离后跑）
   done
 }
 
-kk_health_sampler() { # 负责人要求：冒烟期间每 10s 记一次三容器健康（ExitCode/起止/输出在 HEALTH-DUMP 全量里）。
-  # setsid 脱离探针进程存活于冒烟全程；stderr 继承自冒烟日志（HEALTH 前缀），不污染 stdout
+kk_health_sampler() { # 起采样器（幂等）；输出进 /tmp/kk-health-sampler.log，由 kk_health_dump 同步带进冒烟日志
   local pf=/tmp/kk-health-sampler.pid
   [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null && return 0
   export -f kk_health_loop
-  setsid bash -c kk_health_loop </dev/null >/dev/null &
-  echo "HEALTH 采样器已启动（循环 pid 见日志）" >&2
+  export -f kk_health_pick
+  setsid bash -c kk_health_loop </dev/null >/dev/null 2>&1 &
+  echo "HEALTH 采样器已启动（输出见 /tmp/kk-health-sampler.log，钩子会带回）" >&2
 }
 
-kk_health_dump() { # 全量落盘：每容器 StartedAt + 完整 Health json（Log 数组含每根探针 ExitCode/Output/起止时间）
+kk_health_dump() { # 全量落盘（钩子内同步执行，肯定能进冒烟日志）：采样行 + 每容器 StartedAt + 完整 Health json
   local n
+  [[ -f /tmp/kk-health-sampler.log ]] && { echo "===== HEALTH 采样记录 =====" >&2; cat /tmp/kk-health-sampler.log >&2; }
+  echo "===== HEALTH-DUMP =====" >&2
   for c in web chrome meilisearch; do
     n="$(kk_health_pick "$c")"
-    [[ -n "$n" ]] || continue
+    [[ -n "$n" ]] || { echo "（找不到 $c 容器）" >&2; continue; }
     echo "HEALTH-DUMP $n StartedAt=$(docker inspect -f '{{.State.StartedAt}}' "$n" 2>/dev/null)" >&2
     docker inspect "$n" --format '{{json .State.Health}}' 2>/dev/null >&2
   done
+}
+
+kk_app_log_tail() { # 诊断用（负责人要求）：应用容器日志最后 50 行 + 三个容器的健康状态；503 复现时这些和 x-wonton-error 一起写 .stop
+  local n
+  echo "===== karakeep 三个容器健康状态（docker inspect）=====" >&2
+  for c in web chrome meilisearch; do
+    n="$(kk_health_pick "$c")"
+    [[ -n "$n" ]] || { echo "（找不到 $c 容器）" >&2; continue; }
+    echo "$n: $(docker inspect --format '{{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} 连败={{if .State.Health}}{{.State.Health.FailingStreak}}{{else}}0{{end}}' "$n" 2>/dev/null || echo "inspect 拿不到")" >&2
+  done
+  n="$(kk_health_pick web)"
+  if [[ -z "$n" ]]; then
+    echo "诊断：karakeep 应用容器日志拿不到（docker 不在本机或容器不在跑）" >&2
+    return 0
+  fi
+  echo "===== karakeep 容器（$n）最后 50 行 =====" >&2
+  docker logs --tail 50 "$n" 2>&1 | tail -50 >&2
+  echo "===== 容器日志完 =====" >&2
 }
 
 kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测的结论）：
