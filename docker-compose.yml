@@ -79,7 +79,7 @@ volumes:
   meilisearch:
 
 x-wonton:
-  spec: "0.5"
+  spec: "0.6"
   id: app.karakeep.karakeep
   version: 0.1.0
   kind: app

@@ -5,3 +5,8 @@ updates:
     directory: /
     schedule:
       interval: daily
+    ignore:
+      # Meilisearch 有自己的数据卷，大版本升级要先按上游指南迁移索引
+      # （docs.karakeep.com/administration/meilisearch-upgrade），不自动升。
+      - dependency-name: "getmeili/meilisearch"
+        update-types: ["version-update:semver-major"]
