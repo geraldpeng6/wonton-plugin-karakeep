@@ -45,8 +45,9 @@ kk_login() { # 主人会话种进 SMOKE_JAR，再手动走一遍应用自己的 
   for try in 1 2 3; do
     code="$(curl -sS --noproxy '*' -o /dev/null -c "$SMOKE_JAR" -w '%{http_code}' \
       --data-urlencode "token=$SMOKE_TOKEN" "$SMOKE_BASE/_wonton/login" 2>&1)" || code="curl错误:$code"
-    coreline="$(grep -c wonton. "$SMOKE_JAR" 2>/dev/null || echo 0)"
-    echo "核心登录 HTTP $code，jar 里 wonton 域 cookie ${coreline} 条" >&2
+    echo "核心登录 HTTP $code，jar cookie：$(awk '{print $1, $6}' "$SMOKE_JAR" 2>/dev/null | grep -v '^#' | tr '\n' ' ')" >&2
+    code="$(curl -sS --noproxy '*' -o /dev/null -b "$SMOKE_JAR" -w '%{http_code}' "$SMOKE_WEB_URL/" 2>&1)" || code="curl错误"
+    echo "同 jar GET 插件首页：HTTP $code（200=会话在插件子域被认，401=cookie 域不匹配）" >&2
     resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' \
       -H "Origin: $SMOKE_WEB_URL" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' \
       --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' \
