@@ -53,6 +53,58 @@ kk_app_log_tail() { # 诊断用（负责人要求）：应用容器日志最后 
   echo "===== 容器日志完 =====" >&2
 }
 
+kk_health_pick() { # <svc>：按实例名优先精确匹配本实例的容器，避免同机多轮冒烟串线
+  local inst
+  inst="$(sed 's#https\?://##;s#[/:].*##' <<<"${SMOKE_WEB_URL:-}" | cut -d. -f2)"
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -E "(^wonton-$inst--|--)karakeep--$1($|_)" | head -1
+}
+
+kk_health_loop() { # 采样循环（kk_health_sampler 用 setsid 脱离后跑）：每 10s 记一行紧凑健康状态，容器清空自退。
+  # pid 幂等在循环里做：pid 文件活着就直接退，防止上一轮采样器还活着时重复起
+  local prog n h miss=0 found pf=/tmp/kk-health-sampler.pid
+  [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null && exit 0
+  echo $$ >"$pf"
+  # shellcheck disable=SC2016  # prog 是 jq 程序，不能让 bash 展开
+  prog='"\($t) \($n) \(.Status) streak=\(.FailingStreak) \(if (.Log|length)>0 then (.Log[-1] | "last探针: exit=\(.ExitCode) 起=\(.Start[11:23]) 止=\(.End[11:23]) 输出=\((.Output|gsub("\n";" ")|.[0:80]))") else "last探针: 无" end)"'
+  echo "HEALTH 采样开始 $(date +%H:%M:%S) pid=$$"
+  while :; do
+    found=0
+    for c in web chrome meilisearch; do
+      n="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "karakeep--$c($|_)" | head -1)"
+      [[ -n "$n" ]] || continue
+      found=1
+      h="$(docker inspect "$n" --format '{{json .State.Health}}' 2>/dev/null)" || h=""
+      [[ -n "$h" ]] || continue
+      jq -r --arg n "$n" --arg t "$(date +%H:%M:%S)" "$prog" <<<"$h"
+    done
+    if (( found == 0 )); then
+      (( ++miss >= 3 )) && { echo "HEALTH 采样结束（容器已清）$(date +%H:%M:%S)"; return 0; }
+    else
+      miss=0
+    fi
+    sleep 10
+  done
+}
+
+kk_health_sampler() { # 负责人要求：冒烟期间每 10s 记一次三容器健康（ExitCode/起止/输出在 HEALTH-DUMP 全量里）。
+  # setsid 脱离探针进程存活于冒烟全程；stderr 继承自冒烟日志（HEALTH 前缀），不污染 stdout
+  local pf=/tmp/kk-health-sampler.pid
+  [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null && return 0
+  export -f kk_health_loop
+  setsid bash -c kk_health_loop </dev/null >/dev/null &
+  echo "HEALTH 采样器已启动（循环 pid 见日志）" >&2
+}
+
+kk_health_dump() { # 全量落盘：每容器 StartedAt + 完整 Health json（Log 数组含每根探针 ExitCode/Output/起止时间）
+  local n
+  for c in web chrome meilisearch; do
+    n="$(kk_health_pick "$c")"
+    [[ -n "$n" ]] || continue
+    echo "HEALTH-DUMP $n StartedAt=$(docker inspect -f '{{.State.StartedAt}}' "$n" 2>/dev/null)" >&2
+    docker inspect "$n" --format '{{json .State.Health}}' 2>/dev/null >&2
+  done
+}
+
 kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测的结论）：
   # 1) 核心会话：token POST 返回 303 但不发 cookie（jar 为空，同 jar GET 插件域 401），
   #    必须走 dev.sh 的表单登录回退——用 dweb，并把它写会话的 jar 指到 SMOKE_JAR
@@ -115,6 +167,7 @@ kk_state_write() { # 覆盖写标记文件；套件的 dev.sh probes 里 SMOKE_S
 
 identity_check() { # 应用认出的是主人本人：/api/v1/users/me（OAuth 会话）的名字是主人，且是 OIDC 建的号（非本地密码账号）
   kk_init || return 1
+  kk_health_sampler
   kk_login || { echo "登录链没建立应用会话"; return 1; }
   local me
   me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
@@ -128,10 +181,13 @@ identity_check() { # 应用认出的是主人本人：/api/v1/users/me（OAuth �
     jq -e '.localUser == false' <<<"$me" >/dev/null ||
       { echo "当前用户是本地密码账号：$me"; return 1; }
   fi
+  echo "当前用户：$(jq -r .name <<<"$me")" >&2
+  kk_health_dump
 }
 
 data_write() { # 写一条真实书签（文字书签，内容带时间戳），id 和内容随标记文件覆盖写
   kk_init || return 1
+  kk_health_sampler
   kk_login || { echo "登录链没建立应用会话"; return 1; }
   local text id resp
   text="云吞 e2e 数据探针 $(date +%Y%m%d%H%M%S)"
@@ -146,6 +202,7 @@ data_write() { # 写一条真实书签（文字书签，内容带时间戳），
 
 data_check() { # 断言 data_write 写的书签还在、内容一字不差
   kk_init || return 1
+  kk_health_sampler
   [[ -f ${SMOKE_STATE:-} && -s "$SMOKE_STATE" ]] || { echo "标记文件里没有数据：先跑 data_write"; return 1; }
   # shellcheck source=/dev/null
   . "$SMOKE_STATE"
@@ -157,4 +214,6 @@ data_check() { # 断言 data_write 写的书签还在、内容一字不差
   text="$(jq -r '.content.text // empty' <<<"$resp")"
   [[ "$text" == "$KK_BOOKMARK_TEXT" ]] ||
     { echo "书签内容对不上：期望「$KK_BOOKMARK_TEXT」，拿到「$text」"; return 1; }
+  echo "重装后数据核对通过：书签 $KK_BOOKMARK_ID" >&2
+  kk_health_dump
 }
