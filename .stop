@@ -31,8 +31,15 @@ session cookie），而它只能经 OAuth 登录链建立。逐轮实测定位�
 2. 或者告知：核心网关对"同源、带会话、POST + JSON body 到插件子域"的语义——503 的判定条件
    是什么？如果网关不允许这类 POST（路由实现限制），探针这条路就堵死了，请给替代测法。
 
+## 补充：GET 形式发起还没试过（已写好待一轮名额验证）
+
+better-auth 的 social 端点部分路由接受 GET+query。探针已更新（de360c2）：先试
+`GET /api/auth/sign-in/social?provider=custom&callbackUrl=/`（能绕开就解锁全部六项），
+不行再回退 POST。这一条只需一轮远端名额即可验证——批个"试 GET"比开浏览器实测便宜。
+
 ## 我这边的现状
 
-- 钩子已按契约写好并全部推送（dee05eb + 后续诊断提交）；一旦上面两点有答案，
-  把 kk_login 的 POST 换成可行路径即可，data 钩子（走 run_hook，契约变量齐全）应能直接过。
+- 钩子已按契约写好并全部推送（de360c2）；data_write/data_check 本身已按 run_hook 契约就绪
+  （SMOKE_STATE 标记文件、契约变量齐全），**卡点只在登录链这一步**。GET 形式若通，
+  一次远端名额就能验证全部六项。
 - 其余五项证据都齐；PR 正文会在收到答复后一并回填。
