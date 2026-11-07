@@ -102,9 +102,10 @@ kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测�
 }
 
 
-kk_state_write() { # 覆盖写标记文件；套件的 dev.sh probes 里 SMOKE_STATE 是状态目录（不跑数据钩子），跳过
+kk_state_write() { # 覆盖写标记文件；套件的 dev.sh probes 里 SMOKE_STATE 是状态目录（不跑数据钩子），跳过。
+  # 值用 %q 转义：文本里有空格/中文，data_check 要用 source 读回来
   [[ -d ${SMOKE_STATE:-} ]] && return 0
-  printf 'KK_BOOKMARK_ID=%s\nKK_BOOKMARK_TEXT=%s\n' "$1" "$2" >"$SMOKE_STATE" ||
+  printf 'KK_BOOKMARK_ID=%q\nKK_BOOKMARK_TEXT=%q\n' "$1" "$2" >"$SMOKE_STATE" ||
     { echo "写不进标记文件 \$SMOKE_STATE"; return 1; }
 }
 
