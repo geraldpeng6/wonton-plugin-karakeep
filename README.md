@@ -1,31 +1,36 @@
-# 云吞插件模板
+# Karakeep 书签插件
 
 开发流程见[插件开发指南](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md)。
 
-这是一个能安装的示例插件 `app.example.hello`：使用 nginx 官方镜像显示问候页，经网关的 `sso: proxy` 注入用户名，页面显示“你好，<用户名>”。示例没有应用账号、持久化数据或 MCP 工具。
+这个仓库是 [Karakeep](https://karakeep.com) 插件：收藏链接、笔记和图片，自动抓取标题、正文和整页截图，
+AI 自动打标签，全文搜索。登录交给云吞的身份提供方（`sso: oidc`，上游 Better Auth 的 OIDC），
+打开网页自动跳转登录，没有第二个登录页；AI 打标经云吞的模型网关（`models` 权限）完成，
+不接任何外部 AI 服务。
 
-## 示例文件
+## 组件
 
-| 路径 | 内容 |
-| --- | --- |
-| `docker-compose.yml` | 示例清单、nginx 服务和三个 `configs` |
-| `web/default.conf.template` | nginx 配置，启用 SSI 回显用户名并提供健康检查入口；只放行来自核心地址（`${WONTON_CORE_ADDRESS}`）的请求，其余来源 403 |
-| `web/index.html` | 问候页 |
-| `web/tokens.css` | 页面主题变量的后备值 |
-| `tabs/` | 示例主页的底栏图标 |
-| `screenshots/home.png` | 商店详情页的示例截图 |
-| `scripts/smoke-probes.sh` | 检查真实页面和网关注入身份的插件探针 |
+按上游官方 compose 的三件套，全部用上游官方镜像并按多架构摘要固定：
 
-从模板创建自己的插件后，替换示例清单、网页和素材；具体步骤见[写插件](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#写插件)。
+| 服务 | 镜像 | 用途 |
+| --- | --- | --- |
+| `web` | `ghcr.io/karakeep-app/karakeep:0.34.1` | 应用本体（网页、抓取、AI 推理、搜索索引都在这一个 AIO 容器里） |
+| `chrome` | `ghcr.io/karakeep-app/karakeep-chrome:release` | 无头浏览器，抓网页、整页截图（amd64 是 Google Chrome，arm64 是 Debian Chromium） |
+| `meilisearch` | `getmeili/meilisearch:v1.55.0` | 全文搜索 |
 
-## 更新开发套件
+出网权限（`network.egress`）用于抓取收藏的网页内容；镜像升级 Meilisearch 大版本时需按上游的
+[升级指南](https://docs.karakeep.com/administration/meilisearch-upgrade/)迁移索引，插件先固定在 v1.55。
 
-```bash
-scripts/dev.sh kit-update
-```
+## 数据
 
-在从模板新建的插件仓库中更新套件；本仓库是套件源头，执行时只提示并退出。版本、可选引用和自定义脚本约定见[开发指南](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#更新开发套件)。
+- 书签、数据库和抓取的资产在插件数据目录的 `data/` 子目录里。
+- Meilisearch 索引在插件自己的命名卷 `meilisearch` 里。
+- AI 打标的模型和密钥由云吞的模型网关注入，用户在网关里换模型即可，插件不用改。
+
+## 首次使用
+
+装好后打开网页，经云吞登录后第一次会自动建好账号（第一个登录的是管理员）。浏览器扩展和手机 App
+可在 Karakeep 设置里生成 API key 后接入。
 
 ## 图标
 
-`icon.svg` 是本仓库原创线条图标，按本仓库 MIT 许可证分发，见 [NOTICE](NOTICE)。
+`icon.png` 使用 Karakeep 官方标志，来源、处理方式和商标说明见 [NOTICE](NOTICE)。
