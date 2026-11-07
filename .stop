@@ -31,6 +31,17 @@ session cookie），而它只能经 OAuth 登录链建立。逐轮实测定位�
 2. 或者告知：核心网关对"同源、带会话、POST + JSON body 到插件子域"的语义——503 的判定条件
    是什么？如果网关不允许这类 POST（路由实现限制），探针这条路就堵死了，请给替代测法。
 
+## 负责人 11-07 晚批复后的进展（照批复执行）
+
+- 已停掉强制本机（E2E_HOST=npchy）的冒烟，按批复改回默认分流（不带 E2E_HOST）。
+- GET 形式已实测（de360c2/106dc6b 两轮）：`GET /api/auth/sign-in/social?provider=custom&callbackUrl=/`
+  返回 404，绕不开；POST 形式在之后一轮恢复 200（503 是那台分流机的瞬时态，网关已放行）。
+- 会话链已打通：拿到 provider 地址 → Hydra → 回调 → 应用会话建成（users/me 200）。
+- 顺带修掉一个探针低级 bug（-w 状态行混进 JSON 导致 jq 解析永远失败，106dc6b）。
+- karakeep 的 apiKeys.create（tRPC）稳定返回 500 INTERNAL_SERVER_ERROR（服务端问题）——
+  探针已改为全部走 OAuth 会话 cookie，API key 层整个删掉（62b8a4f），不再依赖该接口。
+- 待办：默认分流重跑一轮（进行中）确认六项；若再卡，只补 .stop 不再反复跑。
+
 ## 补充：GET 形式发起还没试过（已写好待一轮名额验证）
 
 better-auth 的 social 端点部分路由接受 GET+query。探针已更新（de360c2）：先试

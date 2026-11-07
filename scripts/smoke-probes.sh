@@ -48,29 +48,19 @@ kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测�
   for try in 1 2 3; do
     dweb --sso / >/dev/null 2>&1 || true
     grep -q wonton. "$SMOKE_JAR" || { (( try < 3 )) && sleep 10; continue; }
-    # 先试 GET 形式（better-auth 部分路由接受 GET+query；网关 503 拦的是带 body 的 POST 时，GET 能绕开），
-    # 不行再 POST（登录按钮的实际请求）。-w 的状态行放在最后，解析前先剥掉，不污染 JSON。
-    kk_social() { # <method 用 curl 参数直接传> 输出“body+末行 状态”，调用方拆
-      curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Content-Type: application/json' \
-        -H "Origin: $SMOKE_WEB_URL" "$@" -w $'\nKKMETA:%{http_code} LOC:%{redirect_url}' 2>&1
-    }
-    parse_url() { # <resp>：剥掉末行 KKMETA 后取 .url，302 时取 LOC
-      local body="${1%$'\nKKMETA'*}" meta="${1##*$'\nKKMETA'}"
-      local u
-      u="$(jq -re '.url // empty' <<<"$body" 2>/dev/null)" || u=""
-      if [[ -z "$u" && "$meta" == 302* ]]; then
-        u="${meta#*LOC:}"
-      fi
-      [[ -n "$u" ]] && { printf '%s\n' "$u"; return 0; }
-      echo "HTTP $(echo "$meta" | cut -d' ' -f1)，正文：$(head -c 120 <<<"$body")" >&2
-      return 1
-    }
-    oauth_url="$(parse_url "$(kk_social "$SMOKE_WEB_URL/api/auth/sign-in/social?provider=custom&callbackUrl=/")")" || oauth_url=""
-    if [[ -z "$oauth_url" ]]; then
-      echo "GET 形式不行（见上），改 POST（登录按钮的实际请求）" >&2
-      oauth_url="$(parse_url "$(kk_social -X POST --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' "$SMOKE_WEB_URL/api/auth/sign-in/social")")" || oauth_url=""
+    # 手动发应用登录按钮的同一个请求（OAuth 自动跳转是客户端 JS，curl 触发不了）。
+    # 失败即停：登录链走不通就如实报错，不做任何绕网关的变体（POST 503 是底座缺陷，等底座修）。
+    resp="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" -X POST \
+      -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" \
+      --data '{"provider":"custom","callbackURL":"/","errorCallbackURL":"/signin"}' \
+      -w $'\nKKMETA:%{http_code} LOC:%{redirect_url}' "$SMOKE_WEB_URL/api/auth/sign-in/social" 2>&1)" || resp=""
+    body="${resp%$'\nKKMETA'*}" meta="${resp##*$'\nKKMETA'}"
+    oauth_url="$(jq -re '.url // empty' <<<"$body" 2>/dev/null)" || oauth_url=""
+    if [[ -z "$oauth_url" && "$meta" == 302* ]]; then
+      oauth_url="${meta#*LOC:}"
     fi
     if [[ -z "$oauth_url" ]]; then
+      echo "social 端点没返回 provider 地址（HTTP $(echo "$meta" | cut -d' ' -f1)），正文：$(head -c 120 <<<"$body")" >&2
       (( try < 3 )) && sleep 10
       continue
     fi
