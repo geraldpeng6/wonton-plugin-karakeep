@@ -260,12 +260,12 @@ kk_mailpit() { # <path>：调 Mailpit API（basic core:<api-password>）。主�
     "http://smtp.wonton.internal:8025$1" 2>&1
 }
 
-kk_mailpit_wait() { # <jq 过滤> [次数=20]：轮询 Mailpit 信箱直到过滤命中；过滤里的值先经 jq 转成字面量
-  local filt="$1" n="${2:-20}" i out
+kk_mailpit_wait() { # <jq 过滤> [次数=40]：轮询 Mailpit 信箱直到过滤命中；过滤里的值先经 jq 转成字面量
+  local filt="$1" n="${2:-40}" i out
   for ((i = 0; i < n; i++)); do
-    out="$(kk_mailpit "/api/v1/messages?limit=100")" || { sleep 3; continue; }
+    out="$(kk_mailpit "/api/v1/messages?limit=100")" || { sleep 2; continue; }
     jq -e "$filt" <<<"$out" >/dev/null 2>&1 && return 0
-    sleep 3
+    sleep 2
   done
   return 1
 }
@@ -354,8 +354,8 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   echo "邀请信已进内部邮箱（From=$from，To=$member@wonton.internal）"
   kk_mailpit_wait \
     "$(jq -n --arg to "$member@wonton.internal" \
-      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" 20 ||
-    { echo "邀请信一直留在 Mailpit：核心没把它投进收件人私聊（投完才会删）"; return 1; }
+      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" ||
+    { echo "邀请信一直留在 Mailpit：核心没把它投进收件人私聊（投完才会删）；核心日志：$(docker logs "$(kk_core)" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
   echo "核心已把信投进收件人的 Wonton 私聊（Mailpit 里已删除）"
 
   # 5) 外部地址：上游应用把发信失败吞掉（邀请照样建成，见 PR 说明），但信永远进不了信箱（SMTP 550 拒收）
