@@ -238,12 +238,12 @@ kk_init_container() { # 一次性改邮箱的容器（重装会重建，名字�
 
 kk_mailpit() { # <path>：调 Mailpit API（basic core:<api-password>）。主路照核心自己的冒烟：在核心网络里
   # 打 mailpit.wonton.internal:8025（curl 镜像，remote-dev/e2e 起栈都预推）；兜底 web 容器的 wget。
-  local core webc pw dir out
+  local core webc pw dd out
   core="$(kk_core)" || { echo "找不到核心容器 wonton-$SMOKE_INSTANCE--core"; return 1; }
   # e2e 冒烟有 read_env（读实例 .env，用的是全局 $dir，这里别用 dir 当局部名遮蔽它）；
   # dev.sh probes 模式用 probes_setting（SMOKE_STATE 是状态目录）
-  if declare -F read_env >/dev/null; then dir="$(read_env WONTON_DATA_DIR)"; else dir="$(probes_setting WONTON_DATA_DIR)"; fi
-  pw="$(docker exec "$core" cat "$dir/core/mailpit/api-password" 2>/dev/null)"
+  if declare -F read_env >/dev/null; then dd="$(read_env WONTON_DATA_DIR)"; else dd="$(probes_setting WONTON_DATA_DIR)"; fi
+  pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
   [[ -n "$pw" ]] || pw="$(docker exec "$core" sh -c 'cat "$(find / -maxdepth 6 -path "*/core/mailpit/api-password" 2>/dev/null | head -1)"' 2>/dev/null)"
   [[ -n "${pw:-}" ]] || { echo "读不到 Mailpit API 密码（核心数据目录 core/mailpit/api-password）"; return 1; }
   out="$(docker run --rm --network "container:$core" curlimages/curl:8.23.0 \
