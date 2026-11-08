@@ -21,6 +21,11 @@ services:
       OAUTH_PROVIDER_NAME: 云吞
       OAUTH_AUTO_REDIRECT: "true"
       DISABLE_PASSWORD_AUTH: "true"
+      # 应用发的信（邀请、列表协作邀请）经核心的内部邮箱转进收件人的“Wonton”私聊：
+      # 不认证不加密，收件人只能是家里人，外部地址在 SMTP 阶段就被拒（550）。
+      SMTP_HOST: ${WONTON_SMTP_HOST}
+      SMTP_PORT: ${WONTON_SMTP_PORT}
+      SMTP_FROM: ${WONTON_MAIL_FROM}
       # AI 打标走云吞的模型网关（OpenAI 兼容接口），模型用网关的默认模型。
       OPENAI_BASE_URL: ${WONTON_MODEL_BASE_URL}
       OPENAI_API_KEY: ${WONTON_MODEL_API_KEY}
@@ -30,6 +35,8 @@ services:
     volumes:
       - ${WONTON_APP_DATA}/data:/data
     depends_on:
+      init-owner-email:
+        condition: service_completed_successfully
       meilisearch:
         condition: service_healthy
       chrome:
@@ -41,6 +48,57 @@ services:
       timeout: 10s
       start_period: 120s
       start_interval: 3s
+
+  # 一次性服务：把主人账号的邮箱对成核心给的内部邮箱。0.11 之前装的账号存的是当时的真实邮箱，
+  # better-auth 的 OIDC 登录不回写已有账号的 email（只在注册时取声明），应用也没有改邮箱的接口，
+  # 所以对库做一次幂等修订。用同一镜像里 node 自带的 node:sqlite，不再引第二个镜像。
+  # 没建库、没登录过或已是内部邮箱都原样退出；改不动（非内部邮箱、多人同邮箱）非 0 退出，
+  # web 起不来，安装当场失败。
+  init-owner-email:
+    image: ghcr.io/karakeep-app/karakeep:0.34.1@sha256:69ae5315c618b7c14c1af3e34c6e211acdb231793af424ecd1cab0b70691d987
+    entrypoint: ["node", "-e"]
+    command:
+      - |
+        const { DatabaseSync } = require("node:sqlite");
+        const fs = require("fs");
+        const email = process.env.WONTON_OWNER_EMAIL || "";
+        const suffix = "@wonton.internal";
+        const dbPath = "/data/db.db";
+        if (!email.endsWith(suffix)) {
+          console.error("WONTON_OWNER_EMAIL 不是内部邮箱（" + JSON.stringify(email) + "），规范 0.11 应以 " + suffix + " 结尾");
+          process.exit(1);
+        }
+        if (!fs.existsSync(dbPath)) {
+          console.log("还没建库（首次安装），主人账号会在首次登录时用内部邮箱创建");
+          process.exit(0);
+        }
+        const db = new DatabaseSync(dbPath);
+        const finish = (code, msg) => {
+          db.close();
+          (code ? console.error : console.log)(msg);
+          process.exit(code);
+        };
+        const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
+        if (!tables.includes("user") || !tables.includes("account")) {
+          finish(0, "库里还没有账号表（首次安装），主人账号会在首次登录时用内部邮箱创建");
+        }
+        const username = email.slice(0, -suffix.length);
+        const rows = db
+          .prepare("SELECT u.id AS id, u.email AS email FROM account a JOIN user u ON u.id = a.userId WHERE a.providerId = 'custom' AND a.accountId = ?")
+          .all(username);
+        if (rows.length === 0) finish(0, "主人还没登录过（应用里还没有账号），没有要改的邮箱");
+        if (rows.length > 1) finish(1, "account 表里有多条主人的登录记录（sub=" + username + "），不敢猜改哪一个");
+        const account = rows[0];
+        if (account.email === email) finish(0, "主人账号的邮箱已是内部邮箱，不用改");
+        const taken = db.prepare("SELECT id FROM user WHERE email = ? AND id <> ?").get(email, account.id);
+        if (taken) finish(1, "内部邮箱已被另一个账号占用（user " + taken.id + "），拒绝覆盖");
+        db.prepare("UPDATE user SET email = ? WHERE id = ?").run(email, account.id);
+        finish(0, "主人账号的邮箱已从 " + account.email + " 改成 " + email);
+    environment:
+      WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL:?}
+    volumes:
+      - ${WONTON_APP_DATA}/data:/data
+    restart: "no"
 
   chrome:
     image: ghcr.io/karakeep-app/karakeep-chrome:release@sha256:6c80ed470871bb8c129dc58692ca1714cddbc1392faad3ebf59aecd2e6e58eac
@@ -79,9 +137,9 @@ volumes:
   meilisearch:
 
 x-wonton:
-  spec: "0.6"
+  spec: "0.11"
   id: app.karakeep.karakeep
-  version: 0.1.0
+  version: 0.2.0
   kind: app
   title: { zh: 智能收藏夹（Karakeep）, en: Smart Bookmarks (Karakeep) }
   description: { zh: 像微信收藏：网址、文章、笔记、图片都能存进来，自动打好标签，日后搜里面的内容就能找回。适合看到什么都想先存下来的人。, en: "A save-it-for-later box for everything: keep links, articles, notes and images, get tags added automatically, and find anything later by searching what's inside." }
@@ -105,6 +163,9 @@ x-wonton:
       Meilisearch。
 
       核心升级后容器会自动按新的签发方重建，打开照常，不用重装。升级后页面若显示「插件记录已损坏」而打不开，是核心读不了旧记录，重装也修不好。
+
+      应用发出的邀请和列表协作邀请会经云吞的内部邮箱转进收件人的 Wonton 私聊；只发给家里的人，
+      邀请站外的人（外部邮箱）会发送失败。
     en: |
       Save links, articles, notes and images into your own bookmark library. Pages are fetched automatically with title, description, full text and a full-page screenshot, and can be saved quickly from phone and desktop browsers.
 
@@ -113,9 +174,11 @@ x-wonton:
       Crawling is done by a built-in headless browser (it fetches the pages you save, so the plugin needs internet access) and full-text search runs on a built-in Meilisearch service.
 
       After a core upgrade the containers are rebuilt with the new issuer automatically; nothing to reinstall. If the page then reports a corrupted plugin record, the core can't read the record written before the upgrade and reinstalling won't help.
+
+      Emails the app sends (invites and list collaboration invitations) go through Wonton's internal mailbox and arrive in the recipient's Wonton chat. Only household members can receive them; inviting someone outside the household (an external email address) fails to send.
   release_notes:
-    zh: 首个版本：Karakeep 0.34.1，AI 打标走云吞的模型网关。
-    en: "Initial release: Karakeep 0.34.1, with AI tagging via the Wonton model gateway."
+    zh: 接上云吞的内部邮箱：邀请和列表协作邀请转进收件人的 Wonton 私聊（外部邮箱发不出）；已装过的实例把主人账号的邮箱对成内部邮箱。
+    en: "Wires the app to Wonton's internal mailbox: invites and list collaboration invitations arrive in the recipient's Wonton chat (external addresses cannot be sent to); existing installs get the owner account's email aligned to the internal one."
   secrets:
     # NEXTAUTH 的会话签名密钥和 Meilisearch 主密钥，都由核心生成。
     nextauth_secret: { generate: { bytes: 32 } }
@@ -130,6 +193,9 @@ x-wonton:
   permissions:
     - network.egress
     - models
+    - notify
+    # 一次性服务要对出主人账号，用的是核心给的内部邮箱（owner.identity 才注入 WONTON_OWNER_EMAIL）。
+    - owner.identity
   requirements:
     arch: [amd64, arm64]
     memory: 1G

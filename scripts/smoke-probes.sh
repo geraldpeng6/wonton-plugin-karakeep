@@ -217,6 +217,149 @@ data_check() { # 断言 data_write 写的书签还在、内容一字不差
   text="$(jq -r '.content.text // empty' <<<"$resp")"
   [[ "$text" == "$KK_BOOKMARK_TEXT" ]] ||
     { echo "书签内容对不上：期望「$KK_BOOKMARK_TEXT」，拿到「$text」"; return 1; }
-  echo "重装后数据核对通过：书签 $KK_BOOKMARK_ID" >&2
+  # 账号邮箱在重装后仍是内部邮箱（init 每次启动都对账一次，值不变）
+  me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
+    { echo "重装后 users/me 请求失败"; return 1; }
+  email="$(jq -r '.email // empty' <<<"$me")"
+  [[ "$email" == "$SMOKE_OWNER@wonton.internal" ]] ||
+    { echo "重装后账号邮箱不是内部邮箱：$email"; return 1; }
+  echo "重装后数据核对通过：书签 $KK_BOOKMARK_ID，账号邮箱仍是 $email" >&2
   kk_health_dump
+}
+
+# ---------- 邮件（notify，规范 0.11）----------
+kk_core() { # 核心容器：信箱 API 的密码在它挂的数据目录里，Mailpit 的别名也在它的网络上
+  docker ps --format '{{.Names}}' | grep -xE "wonton-${SMOKE_INSTANCE}--core" | head -1
+}
+
+kk_init_container() { # 一次性改邮箱的容器（重装会重建，名字不变）
+  docker ps -a --format '{{.Names}}' | grep -E "init-owner-email" | grep "$SMOKE_INSTANCE" | head -1
+}
+
+kk_mailpit() { # <path>：经核心容器调 Mailpit API（basic core:<api-password>，密码是核心数据目录里的文件）
+  local core pw
+  core="$(kk_core)" || { echo "找不到核心容器 wonton-$SMOKE_INSTANCE--core"; return 1; }
+  pw="$(docker exec "$core" cat "${SMOKE_STATE:-.}/data/core/mailpit/api-password")" ||
+    { echo "读不到 Mailpit API 密码（$SMOKE_STATE/data/core/mailpit/api-password）"; return 1; }
+  docker exec "$core" wget -qO- \
+    --header "Authorization: Basic $(printf 'core:%s' "$pw" | base64 | tr -d '\n')" \
+    "http://mailpit.wonton.internal:8025$1"
+}
+
+kk_mailpit_wait() { # <jq 过滤> [次数=20]：轮询 Mailpit 信箱直到过滤命中；过滤里的值先经 jq 转成字面量
+  local filt="$1" n="${2:-20}" i out
+  for ((i = 0; i < n; i++)); do
+    out="$(kk_mailpit "/api/v1/messages?limit=100")" || { sleep 3; continue; }
+    jq -e "$filt" <<<"$out" >/dev/null 2>&1 && return 0
+    sleep 3
+  done
+  return 1
+}
+
+kk_invite() { # <email>：管理员建用户邀请（上游 TRPC invites.create）
+  curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" \
+    --data "{\"0\":{\"json\":{\"email\":\"$1\"}}}" "${SMOKE_WEB_URL:-}/api/trpc/invites.create?batch=1"
+}
+
+kk_wait_web_healthy() { # 重装后等 web 回到 healthy（最久 150 秒）
+  local i n
+  for ((i = 0; i < 30; i++)); do
+    n="$(kk_health_pick web)"
+    [[ -n "$n" ]] && [[ "$(docker inspect -f '{{.State.Health.Status}}' "$n" 2>/dev/null)" == healthy ]] && return 0
+    sleep 5
+  done
+  echo "web 重装后 150 秒没到 healthy" >&2
+  return 1
+}
+
+extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实邀请信进信箱并被核心投走、外部地址拒收、改邮箱初始化
+  kk_init || return 1
+  kk_health_sampler
+  kk_login || { echo "登录链没建立应用会话"; return 1; }
+  local webc me email from resp initc ilog
+  webc="$(kk_health_pick web)"
+  [[ -n "$webc" ]] || { echo "找不到 web 容器"; return 1; }
+
+  # 1) 三个 SMTP 变量进了 web 容器
+  local smtp_host smtp_port
+  smtp_host="$(docker exec "$webc" printenv WONTON_SMTP_HOST)" || { echo "web 容器没有 WONTON_SMTP_HOST"; return 1; }
+  smtp_port="$(docker exec "$webc" printenv WONTON_SMTP_PORT)" || { echo "web 容器没有 WONTON_SMTP_PORT"; return 1; }
+  from="$(docker exec "$webc" printenv WONTON_MAIL_FROM)" || { echo "web 容器没有 WONTON_MAIL_FROM"; return 1; }
+  [[ "$smtp_host" == "smtp.wonton.internal" && "$smtp_port" == "25" &&
+    "$from" == "$PROBES_PLUGIN_ID@plugins.wonton.internal" ]] ||
+    { echo "SMTP 变量不对：host=$smtp_host port=$smtp_port from=$from"; return 1; }
+  echo "SMTP 变量已注入：$smtp_host:$smtp_port from=$from"
+
+  # 2) 主人账号的邮箱是内部邮箱（OIDC 声明 + 初始化对账后的结果）
+  me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
+    { echo "users/me 请求失败"; return 1; }
+  email="$(jq -r '.email // empty' <<<"$me")"
+  [[ "$email" == "$SMOKE_OWNER@wonton.internal" ]] ||
+    { echo "账号邮箱不是内部邮箱：$email（期望 $SMOKE_OWNER@wonton.internal）"; return 1; }
+  echo "主人账号邮箱 = $email"
+
+  # 3) 一次性初始化在这次安装里跑过，日志有对账结论（装完还没登录过=还没建号；已登录=已是/已改）
+  initc="$(kk_init_container)"
+  [[ -n "$initc" ]] || { echo "找不到 init-owner-email 容器"; return 1; }
+  ilog="$(docker logs "$initc" 2>&1 | tail -2)"
+  grep -qE "已是内部邮箱|已从 .+ 改成|还没登录过|还没建库" <<<"$ilog" ||
+    { echo "init 日志没有对账结论：$ilog"; return 1; }
+  echo "init 容器（$initc）：$(tail -1 <<<"$ilog")"
+
+  # 4) 家人成员 + 真实邀请信：从应用到 Mailpit（From 是 WONTON_MAIL_FROM），再被核心投进私聊后删掉
+  local member outsider
+  member="famprobe-$(date +%s)"
+  resp="$(smoke_api POST /_wonton/api/members -H 'Content-Type: application/json' \
+    -d "{\"display_name\":\"家人甲\",\"username\":\"$member\",\"private_bot\":false}")" ||
+    { echo "建家人失败：$(head -c 200 <<<"$resp")"; return 1; }
+  echo "家人已建：$member@wonton.internal"
+  resp="$(kk_invite "$member@wonton.internal")"
+  jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
+    { echo "邀请家人的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
+  kk_mailpit_wait \
+    "$(jq -n --arg to "$member@wonton.internal" --arg from "$from" \
+      '.messages | any(.To[].Address == $to and .From.Address == $from)')" ||
+    { echo "邀请信 60 秒内没进 Mailpit（收件人 $member@wonton.internal）"; return 1; }
+  echo "邀请信已进内部邮箱（From=$from，To=$member@wonton.internal）"
+  kk_mailpit_wait \
+    "$(jq -n --arg to "$member@wonton.internal" \
+      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" ||
+    { echo "邀请信一直留在 Mailpit：核心没把它投进收件人私聊（投完才会删）"; return 1; }
+  echo "核心已把信投进收件人的 Wonton 私聊（Mailpit 里已删除）"
+
+  # 5) 外部地址：上游应用把发信失败吞掉（邀请照样建成，见 PR 说明），但信永远进不了信箱（SMTP 550 拒收）
+  outsider="nobody-$(date +%s)@example.com"
+  resp="$(kk_invite "$outsider")"
+  jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
+    { echo "邀请外部地址的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
+  sleep 15
+  kk_mailpit_wait \
+    "$(jq -n --arg to "$outsider" \
+      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" 1 ||
+    { echo "外部地址 $outsider 的信进了 Mailpit（550 拒收没生效）"; return 1; }
+  echo "外部地址 $outsider 被 SMTP 拒收：Mailpit 里没有这封信"
+
+  # 6) 改邮箱初始化：把主人账号改回旧邮箱（模拟 0.11 之前装的实例），重装触发 init 对回内部地址
+  local old
+  old="owner-old-$(date +%s)@example.com"
+  docker exec -e KK_OLD="$old" -e KK_CURR="$email" "$webc" node -e '
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync("/data/db.db");
+    db.prepare("UPDATE user SET email = ? WHERE email = ?").run(process.env.KK_OLD, process.env.KK_CURR);
+    db.close();' ||
+    { echo "模拟旧邮箱失败"; return 1; }
+  email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
+  [[ "$email" == "$old" ]] || { echo "旧邮箱没写进去（现在 $email）"; return 1; }
+  echo "已模拟升级前状态：主人账号邮箱 = $old"
+  probes_dev_t 420 reinstall --yes || { echo "reinstall 失败"; return 1; }
+  kk_wait_web_healthy || return 1
+  kk_login || { echo "重装后登录链没建立"; return 1; }
+  email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
+  [[ "$email" == "$SMOKE_OWNER@wonton.internal" ]] ||
+    { echo "重装后邮箱没对回内部地址：$email"; return 1; }
+  initc="$(kk_init_container)"
+  ilog="$(docker logs "$initc" 2>&1 | tail -1)"
+  grep -qF "已从 $old 改成" <<<"$ilog" ||
+    { echo "init 日志没有这次的改邮箱记录：$ilog"; return 1; }
+  echo "初始化把 $old 对回 $email（重装触发，init 日志：$ilog）"
 }
