@@ -223,7 +223,13 @@ data_check() { # 断言 data_write 写的书签还在、内容一字不差
   email="$(jq -r '.email // empty' <<<"$me")"
   [[ "$email" == "$SMOKE_OWNER@wonton.internal" ]] ||
     { echo "重装后账号邮箱不是内部邮箱：$email"; return 1; }
-  echo "重装后数据核对通过：书签 $KK_BOOKMARK_ID，账号邮箱仍是 $email" >&2
+  # init 每次启动都对账一次；重装后日志要么「已从…改成」要么「已是内部邮箱」，值必须是内部地址
+  local initc ilog
+  initc="$(kk_init_container)"
+  ilog="$(docker logs "$initc" 2>&1 | tail -1)"
+  grep -qE "已从 .+ 改成|已是内部邮箱" <<<"$ilog" ||
+    { echo "init 日志没有对账结论：$ilog"; return 1; }
+  echo "重装后数据核对通过：书签 $KK_BOOKMARK_ID，账号邮箱仍是 $email（init：$ilog）" >&2
   kk_health_dump
 }
 
@@ -268,16 +274,6 @@ kk_mailpit_wait() { # <jq 过滤> [次数=40]：轮询 Mailpit 信箱直到过�
     sleep 2
   done
   return 1
-}
-
-kk_api() { # 核心管理接口：套件的 smoke_api 在就用它；e2e 直调没有时用同样的 Bearer curl 兜底
-  if declare -F smoke_api >/dev/null; then
-    smoke_api "$@"
-  else
-    local m="$1" p="$2"
-    shift 2
-    curl -sS --noproxy '*' --fail-with-body -X "$m" -H "Authorization: Bearer $SMOKE_TOKEN" "$@" "$SMOKE_BASE$p"
-  fi
 }
 
 kk_invite() { # <email>：管理员建用户邀请（上游 TRPC invites.create）
@@ -330,47 +326,8 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
     { echo "init 日志没有对账结论：$ilog"; return 1; }
   echo "init 容器（$initc）：$(tail -1 <<<"$ilog")"
 
-  # 4) 家人成员 + 真实邀请信：从应用到 Mailpit（From 是 WONTON_MAIL_FROM），再被核心投进私聊后删掉。
-  # 建家人后核心会重写 Mailpit 收件名单并重启它（几秒），信撞上重启窗口会丢，所以给两次机会。
-  local member outsider try mp_dump
-  for try in 1 2; do
-    member="famprobe-$(date +%s)"
-    resp="$(kk_api POST /_wonton/api/members -H 'Content-Type: application/json' \
-      -d "{\"display_name\":\"家人甲$try\",\"username\":\"$member\",\"private_bot\":false}")" ||
-      { echo "建家人失败：$(head -c 200 <<<"$resp")"; return 1; }
-    echo "家人已建：$member@wonton.internal"
-    sleep 8
-    resp="$(kk_invite "$member@wonton.internal")"
-    jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
-      { echo "邀请家人的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
-    if kk_mailpit_wait \
-      "$(jq -n --arg to "$member@wonton.internal" --arg from "$from" \
-        '.messages | any(.To[].Address == $to and .From.Address == $from)')" 20; then
-      break
-    fi
-    mp_dump="$(kk_mailpit "/api/v1/messages?limit=10" 2>&1 | head -c 300)" || mp_dump="(Mailpit 读不到)"
-    (( try < 2 )) && echo "第 1 封邀请信 60 秒没进 Mailpit（现在信箱：$mp_dump），重试一次"
-  done
-  echo "邀请信已进内部邮箱（From=$from，To=$member@wonton.internal）"
-  kk_mailpit_wait \
-    "$(jq -n --arg to "$member@wonton.internal" \
-      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" ||
-    { echo "邀请信一直留在 Mailpit：核心没把它投进收件人私聊（投完才会删）；核心日志：$(docker logs "$(kk_core)" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
-  echo "核心已把信投进收件人的 Wonton 私聊（Mailpit 里已删除）"
-
-  # 5) 外部地址：上游应用把发信失败吞掉（邀请照样建成，见 PR 说明），但信永远进不了信箱（SMTP 550 拒收）
-  outsider="nobody-$(date +%s)@example.com"
-  resp="$(kk_invite "$outsider")"
-  jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
-    { echo "邀请外部地址的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
-  sleep 15
-  kk_mailpit_wait \
-    "$(jq -n --arg to "$outsider" \
-      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" 1 ||
-    { echo "外部地址 $outsider 的信进了 Mailpit（550 拒收没生效）"; return 1; }
-  echo "外部地址 $outsider 被 SMTP 拒收：Mailpit 里没有这封信"
-
-  # 6) 改邮箱初始化：把主人账号改回旧邮箱（模拟 0.11 之前装的实例），重装触发 init 对回内部地址
+  # 4) 模拟 0.11 之前装的实例：把主人账号的邮箱改成旧值（核心只给 status=joined 的家人和主人投信，
+  #    刚邀请还没加入的家人不投，所以收件人用主人自己——库里已是旧值，invites 不会按“已有用户”拒绝）
   local old
   old="owner-old-$(date +%s)@example.com"
   docker exec -e KK_OLD="$old" -e KK_CURR="$email" "$webc" node -e '
@@ -386,6 +343,36 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
   [[ "$email" == "$old" ]] || { echo "旧邮箱没写进去（现在 $email）"; return 1; }
   echo "已模拟升级前状态：主人账号邮箱 = $old"
+
+  # 5) 真实邀请信：发给主人的内部地址，进 Mailpit（From 是 WONTON_MAIL_FROM），再被核心投进私聊后删掉
+  local outsider
+  resp="$(kk_invite "$SMOKE_OWNER@wonton.internal")"
+  jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
+    { echo "邀请的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
+  kk_mailpit_wait \
+    "$(jq -n --arg to "$SMOKE_OWNER@wonton.internal" --arg from "$from" \
+      '.messages | any(.To[].Address == $to and .From.Address == $from)')" ||
+    { echo "邀请信 80 秒内没进 Mailpit（收件人 $SMOKE_OWNER@wonton.internal）"; return 1; }
+  echo "邀请信已进内部邮箱（From=$from，To=$SMOKE_OWNER@wonton.internal）"
+  kk_mailpit_wait \
+    "$(jq -n --arg to "$SMOKE_OWNER@wonton.internal" \
+      '(.messages | map(select(.To[].Address == $to and .From.Address == $from)) | length) == 0')" ||
+    { echo "邀请信一直留在 Mailpit：核心没把它投进收件人私聊（投完才会删）；核心日志：$(docker logs "$(kk_core)" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
+  echo "核心已把信投进收件人的 Wonton 私聊（Mailpit 里已删除）"
+
+  # 6) 外部地址：上游应用把发信失败吞掉（邀请照样建成，见 PR 说明），但信永远进不了信箱（SMTP 550 拒收）
+  outsider="nobody-$(date +%s)@example.com"
+  resp="$(kk_invite "$outsider")"
+  jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
+    { echo "邀请外部地址的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
+  sleep 15
+  kk_mailpit_wait \
+    "$(jq -n --arg to "$outsider" \
+      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" 1 ||
+    { echo "外部地址 $outsider 的信进了 Mailpit（550 拒收没生效）"; return 1; }
+  echo "外部地址 $outsider 被 SMTP 拒收：Mailpit 里没有这封信"
+
+  # 7) 改邮箱初始化：重装触发 init 把旧邮箱对回内部地址
   if declare -F probes_dev_t >/dev/null; then
     probes_dev_t 420 reinstall --yes || { echo "reinstall 失败"; return 1; }
   else
