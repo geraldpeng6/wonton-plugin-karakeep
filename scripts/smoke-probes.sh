@@ -161,11 +161,18 @@ kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测�
 }
 
 
-kk_state_write() { # 覆盖写标记文件；套件的 dev.sh probes 里 SMOKE_STATE 是状态目录（不跑数据钩子），跳过。
+kk_marker() { # SMOKE_STATE 在冒烟套件里是目录、别处可能是文件，标记文件取对应路径
+	if [[ -d ${SMOKE_STATE:-} ]]; then
+		printf '%s' "$SMOKE_STATE/karakeep-marker"
+	else
+		printf '%s' "${SMOKE_STATE:-}"
+	fi
+}
+
+kk_state_write() { # 覆盖写标记文件。
   # 值用 %q 转义：文本里有空格/中文，data_check 要用 source 读回来
-  [[ -d ${SMOKE_STATE:-} ]] && return 0
-  printf 'KK_BOOKMARK_ID=%q\nKK_BOOKMARK_TEXT=%q\n' "$1" "$2" >"$SMOKE_STATE" ||
-    { echo "写不进标记文件 \$SMOKE_STATE"; return 1; }
+  printf 'KK_BOOKMARK_ID=%q\nKK_BOOKMARK_TEXT=%q\n' "$1" "$2" >"$(kk_marker)" ||
+    { echo "写不进标记文件 \$(kk_marker)"; return 1; }
 }
 
 identity_check() { # 应用认出的是主人本人：/api/v1/users/me（OAuth 会话）的名字是主人，且是 OIDC 建的号（非本地密码账号）
@@ -206,11 +213,11 @@ data_write() { # 写一条真实书签（文字书签，内容带时间戳），
 data_check() { # 断言 data_write 写的书签还在、内容一字不差
   kk_init || return 1
   kk_health_sampler
-  [[ -f ${SMOKE_STATE:-} && -s "$SMOKE_STATE" ]] || { echo "标记文件里没有数据：先跑 data_write"; return 1; }
+  [[ -s $(kk_marker) ]] || { echo "标记文件里没有数据：先跑 data_write"; return 1; }
   # shellcheck source=/dev/null
-  . "$SMOKE_STATE"
+  . "$(kk_marker)"
   [[ -n "${KK_BOOKMARK_ID:-}" && -n "${KK_BOOKMARK_TEXT:-}" ]] ||
-    { echo "标记文件不完整：$SMOKE_STATE"; return 1; }
+    { echo "标记文件不完整：$(kk_marker)"; return 1; }
   local resp text
   resp="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/bookmarks/$KK_BOOKMARK_ID")" ||
     { echo "读书签 $KK_BOOKMARK_ID 失败"; return 1; }
