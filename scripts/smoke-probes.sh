@@ -280,11 +280,11 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   webc="$(kk_health_pick web)"
   [[ -n "$webc" ]] || { echo "找不到 web 容器"; return 1; }
 
-  # 1) 三个 SMTP 变量进了 web 容器
+  # 1) 三个 SMTP 变量进了 web 容器（compose 把 WONTON_SMTP_* 映射成上游的 SMTP_*）
   local smtp_host smtp_port
-  smtp_host="$(docker exec "$webc" printenv WONTON_SMTP_HOST)" || { echo "web 容器没有 WONTON_SMTP_HOST"; return 1; }
-  smtp_port="$(docker exec "$webc" printenv WONTON_SMTP_PORT)" || { echo "web 容器没有 WONTON_SMTP_PORT"; return 1; }
-  from="$(docker exec "$webc" printenv WONTON_MAIL_FROM)" || { echo "web 容器没有 WONTON_MAIL_FROM"; return 1; }
+  smtp_host="$(docker exec "$webc" printenv SMTP_HOST)" || { echo "web 容器没有 SMTP_HOST"; return 1; }
+  smtp_port="$(docker exec "$webc" printenv SMTP_PORT)" || { echo "web 容器没有 SMTP_PORT"; return 1; }
+  from="$(docker exec "$webc" printenv SMTP_FROM)" || { echo "web 容器没有 SMTP_FROM"; return 1; }
   [[ "$smtp_host" == "smtp.wonton.internal" && "$smtp_port" == "25" &&
     "$from" == "$PROBES_PLUGIN_ID@plugins.wonton.internal" ]] ||
     { echo "SMTP 变量不对：host=$smtp_host port=$smtp_port from=$from"; return 1; }
@@ -345,7 +345,11 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   docker exec -e KK_OLD="$old" -e KK_CURR="$email" "$webc" node -e '
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync("/data/db.db");
-    db.prepare("UPDATE user SET email = ? WHERE email = ?").run(process.env.KK_OLD, process.env.KK_CURR);
+    for (let i = 0; ; i++) {
+      try { db.prepare("UPDATE user SET email = ? WHERE email = ?").run(process.env.KK_OLD, process.env.KK_CURR); break; }
+      catch (e) { if (i >= 4) { db.close(); throw e; } }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+    }
     db.close();' ||
     { echo "模拟旧邮箱失败"; return 1; }
   email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
