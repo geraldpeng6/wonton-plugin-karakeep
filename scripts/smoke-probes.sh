@@ -242,13 +242,15 @@ kk_init_container() { # 一次性改邮箱的容器（重装会重建，名字�
   docker ps -a --format '{{.Names}}' | grep -E "init-owner-email" | grep "$SMOKE_INSTANCE" | head -1
 }
 
+kk_data_dir() { # 核心数据目录（Mailpit 的库、投递记录都在它下面）
+  if declare -F read_env >/dev/null; then read_env WONTON_DATA_DIR; else probes_setting WONTON_DATA_DIR; fi
+}
+
 kk_mailpit() { # <path>：调 Mailpit API（basic core:<api-password>）。主路照核心自己的冒烟：在核心网络里
   # 打 mailpit.wonton.internal:8025（curl 镜像，remote-dev/e2e 起栈都预推）；兜底 web 容器的 wget。
   local core webc pw dd out
   core="$(kk_core)" || { echo "找不到核心容器 wonton-$SMOKE_INSTANCE--core"; return 1; }
-  # e2e 冒烟有 read_env（读实例 .env，用的是全局 $dir，这里别用 dir 当局部名遮蔽它）；
-  # dev.sh probes 模式用 probes_setting（SMOKE_STATE 是状态目录）
-  if declare -F read_env >/dev/null; then dd="$(read_env WONTON_DATA_DIR)"; else dd="$(probes_setting WONTON_DATA_DIR)"; fi
+  dd="$(kk_data_dir)"
   pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
   [[ -n "$pw" ]] || pw="$(docker exec "$core" sh -c 'cat "$(find / -maxdepth 6 -path "*/core/mailpit/api-password" 2>/dev/null | head -1)"' 2>/dev/null)"
   [[ -n "${pw:-}" ]] || { echo "读不到 Mailpit API 密码（核心数据目录 core/mailpit/api-password）"; return 1; }
@@ -344,21 +346,33 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   [[ "$email" == "$old" ]] || { echo "旧邮箱没写进去（现在 $email）"; return 1; }
   echo "已模拟升级前状态：主人账号邮箱 = $old"
 
-  # 5) 真实邀请信：发给主人的内部地址，进 Mailpit（From 是 WONTON_MAIL_FROM），再被核心投进私聊后删掉
-  local outsider
+  # 5) 真实邀请信：发给主人的内部地址；核心投进主人的 Wonton 私聊后在投递记录里落 delivered
+  #    （记录文件按消息 id 哈希命名，投完才写，轮询它不怕信被秒删）
+  local outsider recdir before rec found json plugin_id i
+  plugin_id="${from%@plugins.wonton.internal}"
+  recdir="$(kk_data_dir)/mailpit/delivery"
+  corec="$(kk_core)"
+  before="$(docker exec "$corec" sh -c "ls '$recdir' 2>/dev/null" | sort)"
   resp="$(kk_invite "$SMOKE_OWNER@wonton.internal")"
   jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
     { echo "邀请的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
-  kk_mailpit_wait \
-    "$(jq -n --arg to "$SMOKE_OWNER@wonton.internal" --arg from "$from" \
-      '.messages | any(.To[].Address == $to and .From.Address == $from)')" ||
-    { echo "邀请信 80 秒内没进 Mailpit（收件人 $SMOKE_OWNER@wonton.internal）"; return 1; }
-  echo "邀请信已进内部邮箱（From=$from，To=$SMOKE_OWNER@wonton.internal）"
-  kk_mailpit_wait \
-    "$(jq -n --arg to "$SMOKE_OWNER@wonton.internal" \
-      '(.messages | map(select(.To[].Address == $to and .From.Address == $from)) | length) == 0')" ||
-    { echo "邀请信一直留在 Mailpit：核心没把它投进收件人私聊（投完才会删）；核心日志：$(docker logs "$(kk_core)" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
-  echo "核心已把信投进收件人的 Wonton 私聊（Mailpit 里已删除）"
+  found=""
+  for ((i = 0; i < 40; i++)); do
+    [[ -n "$found" ]] && break
+    sleep 3
+    while IFS= read -r rec; do
+      [[ -n "$rec" ]] && grep -qxF "$rec" <<<"$before" && continue
+      json="$(docker exec "$corec" cat "$recdir/$rec" 2>/dev/null)" || continue
+      if jq -e --arg p "$plugin_id" --arg u "$SMOKE_OWNER" \
+        '.decision.accepted.plugin_id == $p and (.delivered | index($u))' <<<"$json" >/dev/null 2>&1; then
+        found="$rec"
+        break
+      fi
+    done < <(docker exec "$corec" sh -c "ls '$recdir' 2>/dev/null" | sort)
+  done
+  [[ -n "$found" ]] ||
+    { echo "投递记录里没有本插件投给 $SMOKE_OWNER@wonton.internal 的信；核心日志：$(docker logs "$corec" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
+  echo "核心已把邀请信投进主人的 Wonton 私聊（投递记录 $found，delivered 含主人，From=$from）"
 
   # 6) 外部地址：上游应用把发信失败吞掉（邀请照样建成，见 PR 说明），但信永远进不了信箱（SMTP 550 拒收）
   outsider="nobody-$(date +%s)@example.com"
