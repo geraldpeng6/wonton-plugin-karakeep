@@ -358,7 +358,11 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
   [[ "$email" == "$old" ]] || { echo "旧邮箱没写进去（现在 $email）"; return 1; }
   echo "已模拟升级前状态：主人账号邮箱 = $old"
-  probes_dev_t 420 reinstall --yes || { echo "reinstall 失败"; return 1; }
+  if declare -F probes_dev_t >/dev/null; then
+    probes_dev_t 420 reinstall --yes || { echo "reinstall 失败"; return 1; }
+  else
+    (cd "${dir:?}" && nice -n 19 timeout 420 scripts/dev.sh reinstall --yes) || { echo "reinstall 失败"; return 1; }
+  fi
   kk_wait_web_healthy || return 1
   kk_login || { echo "重装后登录链没建立"; return 1; }
   email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
