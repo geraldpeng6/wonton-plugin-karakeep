@@ -259,6 +259,16 @@ kk_mailpit_wait() { # <jq 过滤> [次数=20]：轮询 Mailpit 信箱直到过�
   return 1
 }
 
+kk_api() { # 核心管理接口：套件的 smoke_api 在就用它；e2e 直调没有时用同样的 Bearer curl 兜底
+  if declare -F smoke_api >/dev/null; then
+    smoke_api "$@"
+  else
+    local m="$1" p="$2"
+    shift 2
+    curl -sS --noproxy '*' --fail-with-body -X "$m" -H "Authorization: Bearer $SMOKE_TOKEN" "$@" "$SMOKE_BASE$p"
+  fi
+}
+
 kk_invite() { # <email>：管理员建用户邀请（上游 TRPC invites.create）
   curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" \
     --data "{\"0\":{\"json\":{\"email\":\"$1\"}}}" "${SMOKE_WEB_URL:-}/api/trpc/invites.create?batch=1"
@@ -312,7 +322,7 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   # 4) 家人成员 + 真实邀请信：从应用到 Mailpit（From 是 WONTON_MAIL_FROM），再被核心投进私聊后删掉
   local member outsider
   member="famprobe-$(date +%s)"
-  resp="$(smoke_api POST /_wonton/api/members -H 'Content-Type: application/json' \
+  resp="$(kk_api POST /_wonton/api/members -H 'Content-Type: application/json' \
     -d "{\"display_name\":\"家人甲\",\"username\":\"$member\",\"private_bot\":false}")" ||
     { echo "建家人失败：$(head -c 200 <<<"$resp")"; return 1; }
   echo "家人已建：$member@wonton.internal"
