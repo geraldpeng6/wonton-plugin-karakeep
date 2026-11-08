@@ -294,6 +294,25 @@ kk_wait_web_healthy() { # 重装后等 web 回到 healthy（最久 150 秒）
   return 1
 }
 
+kk_b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '=\n'; }
+
+kk_matrix_owner_token() { # 以主人身份登录 Matrix（开发栈必生成的 JWT 钥匙，核心冒烟同款做法）
+  local corec project key pl signing sig tok
+  corec="$(kk_core)" || return 1
+  project="$(docker inspect "$corec" --format '{{index .Config.Labels "com.docker.compose.project"}}')"
+  key="$HOME/.local/state/wonton-dev/$project/secrets/matrix-jwt.pem"
+  [[ -f "$key" ]] || { echo "找不到 $key（本机冒烟才能读核心私钥）"; return 1; }
+  pl="$(jq -cn --arg s "$SMOKE_OWNER" --argjson n "$(date +%s)" \
+    '{sub:$s,iss:"wonton-core",aud:"tuwunel",iat:$n,exp:($n+120)}')"
+  signing="$(printf '{"alg":"EdDSA","typ":"JWT"}' | kk_b64url).$(printf '%s' "$pl" | kk_b64url)"
+  sig="$(printf '%s' "$signing" | openssl pkeyutl -sign -rawin -inkey "$key" 2>/dev/null | kk_b64url)"
+  [[ -n "$sig" ]] || { echo "JWT 签名失败"; return 1; }
+  tok="${signing}.${sig}"
+  matrix_curl -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -cn --arg t "$tok" '{type:"org.matrix.login.jwt",token:$t,initial_device_display_name:"karakeep mail probe"}')" \
+    "http://tuwunel.wonton.internal:8008/_matrix/client/v3/login" | jq -r '.access_token // empty'
+}
+
 extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实邀请信进信箱并被核心投走、外部地址拒收、改邮箱初始化
   kk_init || return 1
   kk_health_sampler
@@ -346,33 +365,39 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   [[ "$email" == "$old" ]] || { echo "旧邮箱没写进去（现在 $email）"; return 1; }
   echo "已模拟升级前状态：主人账号邮箱 = $old"
 
-  # 5) 真实邀请信：发给主人的内部地址；核心投进主人的 Wonton 私聊后在投递记录里落 delivered
-  #    （记录文件按消息 id 哈希命名，投完才写，轮询它不怕信被秒删）
-  local outsider recdir before rec found json plugin_id i
-  plugin_id="${from%@plugins.wonton.internal}"
-  recdir="$(kk_data_dir)/core/mailpit/delivery"
+  # 5) 真实邀请信：发给主人的内部地址；核心投进主人的 Wonton 私聊后，那条 Matrix 消息永久在房间里
+  #    （投完即删 Mailpit 和记录文件，轮询它们是亚秒级窗口），所以以主人身份读私聊拿投递证据。
+  local outsider token mtok before_ts seen_room corec json plugin_id
   corec="$(kk_core)"
-  before="$(docker exec "$corec" sh -c "ls '$recdir' 2>/dev/null" | sort)"
+  plugin_id="${from%@plugins.wonton.internal}"
+  mtok="$(kk_matrix_owner_token)"
+  [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
+  before_ts="$(date +%s000)"
   resp="$(kk_invite "$SMOKE_OWNER@wonton.internal")"
   jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
     { echo "邀请的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
   found=""
-  for ((i = 0; i < 40; i++)); do
+  for ((i = 0; i < 30; i++)); do
     [[ -n "$found" ]] && break
     sleep 3
-    while IFS= read -r rec; do
-      [[ -n "$rec" ]] && grep -qxF "$rec" <<<"$before" && continue
-      json="$(docker exec "$corec" cat "$recdir/$rec" 2>/dev/null)" || continue
-      if jq -e --arg p "$plugin_id" --arg u "$SMOKE_OWNER" \
-        '.decision.accepted.plugin_id == $p and (.delivered | index($u))' <<<"$json" >/dev/null 2>&1; then
-        found="$rec"
+    seen_room="$(matrix_curl -H "Authorization: Bearer $mtok" \
+      "http://tuwunel.wonton.internal:8008/_matrix/client/v3/joined_rooms" 2>/dev/null | jq -r '.joined_rooms[]' 2>/dev/null)" ||
+      continue
+    while IFS= read -r room; do
+      [[ -n "$room" ]] || continue
+      json="$(matrix_curl -H "Authorization: Bearer $mtok" \
+        "http://tuwunel.wonton.internal:8008/_matrix/client/v3/rooms/$(printf '%s' "$room" | sed 's/!/%21/g;s/:/%3A/g')/messages?dir=b&limit=30" 2>/dev/null)" || continue
+      if jq -e --arg p "$plugin_id" --argjson t "$before_ts" '.chunk[] |
+          select(.type == "m.room.message" and .origin_server_ts >= $t and
+          .content["app.wonton.plugin_mail"].plugin_id == $p)' <<<"$json" >/dev/null 2>&1; then
+        found="$room"
         break
       fi
-    done < <(docker exec "$corec" sh -c "ls '$recdir' 2>/dev/null" | sort)
+    done <<<"$seen_room"
   done
   [[ -n "$found" ]] ||
-    { echo "投递记录里没有本插件投给 $SMOKE_OWNER@wonton.internal 的信；核心日志：$(docker logs "$corec" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
-  echo "核心已把邀请信投进主人的 Wonton 私聊（投递记录 $found，delivered 含主人，From=$from）"
+    { echo "主人的 Wonton 私聊里没有本插件的邀请信；核心日志：$(docker logs "$corec" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
+  echo "核心已把邀请信投进主人的 Wonton 私聊（房间 $found，From=$from）"
 
   # 6) 外部地址：上游应用把发信失败吞掉（邀请照样建成，见 PR 说明），但信永远进不了信箱（SMTP 550 拒收）
   outsider="nobody-$(date +%s)@example.com"
