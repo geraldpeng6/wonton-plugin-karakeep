@@ -294,23 +294,9 @@ kk_wait_web_healthy() { # 重装后等 web 回到 healthy（最久 150 秒）
   return 1
 }
 
-kk_b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '=\n'; }
-
-kk_matrix_owner_token() { # 以主人身份登录 Matrix（开发栈必生成的 JWT 钥匙，核心冒烟同款做法）
-  local corec project key pl signing sig tok
-  corec="$(kk_core)" || return 1
-  project="$(docker inspect "$corec" --format '{{index .Config.Labels "com.docker.compose.project"}}')"
-  key="$HOME/.local/state/wonton-dev/$project/secrets/matrix-jwt.pem"
-  [[ -f "$key" ]] || { echo "找不到 $key（本机冒烟才能读核心私钥）"; return 1; }
-  pl="$(jq -cn --arg s "$SMOKE_OWNER" --argjson n "$(date +%s)" \
-    '{sub:$s,iss:"wonton-core",aud:"tuwunel",iat:$n,exp:($n+120)}')"
-  signing="$(printf '{"alg":"EdDSA","typ":"JWT"}' | kk_b64url).$(printf '%s' "$pl" | kk_b64url)"
-  sig="$(printf '%s' "$signing" | openssl pkeyutl -sign -rawin -inkey "$key" 2>/dev/null | kk_b64url)"
-  [[ -n "$sig" ]] || { echo "JWT 签名失败"; return 1; }
-  tok="${signing}.${sig}"
-  matrix_curl -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -cn --arg t "$tok" '{type:"org.matrix.login.jwt",token:$t,initial_device_display_name:"karakeep mail probe"}')" \
-    "http://tuwunel.wonton.internal:8008/_matrix/client/v3/login" | jq -r '.access_token // empty'
+kk_matrix_owner_token() { # 以主人身份拿 Matrix 令牌：套件的 owner_access_token（管理令牌 impersonation）
+  local tuwunel="http://tuwunel.wonton.internal:8008"
+  owner_access_token
 }
 
 extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实邀请信进信箱并被核心投走、外部地址拒收、改邮箱初始化
