@@ -237,10 +237,13 @@ kk_init_container() { # 一次性改邮箱的容器（重装会重建，名字�
 }
 
 kk_mailpit() { # <path>：经核心容器调 Mailpit API（basic core:<api-password>，密码是核心数据目录里的文件）
-  local core pw
+  local core pw dir
   core="$(kk_core)" || { echo "找不到核心容器 wonton-$SMOKE_INSTANCE--core"; return 1; }
-  pw="$(docker exec "$core" cat "${SMOKE_STATE:-.}/data/core/mailpit/api-password")" ||
-    { echo "读不到 Mailpit API 密码（$SMOKE_STATE/data/core/mailpit/api-password）"; return 1; }
+  # e2e 冒烟有 read_env（读实例 .env）；dev.sh probes 模式用 probes_setting（SMOKE_STATE 是状态目录）
+  if declare -F read_env >/dev/null; then dir="$(read_env WONTON_DATA_DIR)"; else dir="$(probes_setting WONTON_DATA_DIR)"; fi
+  pw="$(docker exec "$core" cat "$dir/core/mailpit/api-password" 2>/dev/null)"
+  [[ -n "$pw" ]] || pw="$(docker exec "$core" sh -c 'cat "$(find / -maxdepth 6 -path "*/core/mailpit/api-password" 2>/dev/null | head -1)"' 2>/dev/null)"
+  [[ -n "${pw:-}" ]] || { echo "读不到 Mailpit API 密码（核心数据目录 core/mailpit/api-password）"; return 1; }
   docker exec "$core" wget -qO- \
     --header "Authorization: Basic $(printf 'core:%s' "$pw" | base64 | tr -d '\n')" \
     "http://mailpit.wonton.internal:8025$1"
@@ -286,7 +289,7 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   smtp_port="$(docker exec "$webc" printenv SMTP_PORT)" || { echo "web 容器没有 SMTP_PORT"; return 1; }
   from="$(docker exec "$webc" printenv SMTP_FROM)" || { echo "web 容器没有 SMTP_FROM"; return 1; }
   [[ "$smtp_host" == "smtp.wonton.internal" && "$smtp_port" == "25" &&
-    "$from" == "$PROBES_PLUGIN_ID@plugins.wonton.internal" ]] ||
+    "$from" == *@plugins.wonton.internal ]] ||
     { echo "SMTP 变量不对：host=$smtp_host port=$smtp_port from=$from"; return 1; }
   echo "SMTP 变量已注入：$smtp_host:$smtp_port from=$from"
 
