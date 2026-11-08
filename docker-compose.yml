@@ -98,6 +98,7 @@ services:
       WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL:?}
     volumes:
       - ${WONTON_APP_DATA}/data:/data
+    network_mode: none
     restart: "no"
 
   chrome:
