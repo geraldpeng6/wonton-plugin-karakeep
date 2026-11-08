@@ -350,7 +350,7 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   #    （记录文件按消息 id 哈希命名，投完才写，轮询它不怕信被秒删）
   local outsider recdir before rec found json plugin_id i
   plugin_id="${from%@plugins.wonton.internal}"
-  recdir="$(kk_data_dir)/mailpit/delivery"
+  recdir="$(kk_data_dir)/core/mailpit/delivery"
   corec="$(kk_core)"
   before="$(docker exec "$corec" sh -c "ls '$recdir' 2>/dev/null" | sort)"
   resp="$(kk_invite "$SMOKE_OWNER@wonton.internal")"
