@@ -326,24 +326,31 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
     { echo "init 日志没有对账结论：$ilog"; return 1; }
   echo "init 容器（$initc）：$(tail -1 <<<"$ilog")"
 
-  # 4) 家人成员 + 真实邀请信：从应用到 Mailpit（From 是 WONTON_MAIL_FROM），再被核心投进私聊后删掉
-  local member outsider
-  member="famprobe-$(date +%s)"
-  resp="$(kk_api POST /_wonton/api/members -H 'Content-Type: application/json' \
-    -d "{\"display_name\":\"家人甲\",\"username\":\"$member\",\"private_bot\":false}")" ||
-    { echo "建家人失败：$(head -c 200 <<<"$resp")"; return 1; }
-  echo "家人已建：$member@wonton.internal"
-  resp="$(kk_invite "$member@wonton.internal")"
-  jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
-    { echo "邀请家人的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
-  kk_mailpit_wait \
-    "$(jq -n --arg to "$member@wonton.internal" --arg from "$from" \
-      '.messages | any(.To[].Address == $to and .From.Address == $from)')" ||
-    { echo "邀请信 60 秒内没进 Mailpit（收件人 $member@wonton.internal）"; return 1; }
+  # 4) 家人成员 + 真实邀请信：从应用到 Mailpit（From 是 WONTON_MAIL_FROM），再被核心投进私聊后删掉。
+  # 建家人后核心会重写 Mailpit 收件名单并重启它（几秒），信撞上重启窗口会丢，所以给两次机会。
+  local member outsider try mp_dump
+  for try in 1 2; do
+    member="famprobe-$(date +%s)"
+    resp="$(kk_api POST /_wonton/api/members -H 'Content-Type: application/json' \
+      -d "{\"display_name\":\"家人甲$try\",\"username\":\"$member\",\"private_bot\":false}")" ||
+      { echo "建家人失败：$(head -c 200 <<<"$resp")"; return 1; }
+    echo "家人已建：$member@wonton.internal"
+    sleep 8
+    resp="$(kk_invite "$member@wonton.internal")"
+    jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
+      { echo "邀请家人的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
+    if kk_mailpit_wait \
+      "$(jq -n --arg to "$member@wonton.internal" --arg from "$from" \
+        '.messages | any(.To[].Address == $to and .From.Address == $from)')" 20; then
+      break
+    fi
+    mp_dump="$(kk_mailpit "/api/v1/messages?limit=10" 2>&1 | head -c 300)" || mp_dump="(Mailpit 读不到)"
+    (( try < 2 )) && echo "第 1 封邀请信 60 秒没进 Mailpit（现在信箱：$mp_dump），重试一次"
+  done
   echo "邀请信已进内部邮箱（From=$from，To=$member@wonton.internal）"
   kk_mailpit_wait \
     "$(jq -n --arg to "$member@wonton.internal" \
-      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" ||
+      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" 20 ||
     { echo "邀请信一直留在 Mailpit：核心没把它投进收件人私聊（投完才会删）"; return 1; }
   echo "核心已把信投进收件人的 Wonton 私聊（Mailpit 里已删除）"
 
