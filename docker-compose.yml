@@ -103,12 +103,16 @@ x-wonton:
 
       抓网页用的是插件内置的无头浏览器（会抓取你收藏的页面，需要出网权限），全文搜索用的是插件内置的
       Meilisearch。
+
+      核心升级后容器会自动按新的签发方重建，打开照常，不用重装。升级后页面若显示「插件记录已损坏」而打不开，是核心读不了旧记录，重装也修不好。
     en: |
       Save links, articles, notes and images into your own bookmark library. Pages are fetched automatically with title, description, full text and a full-page screenshot, and can be saved quickly from phone and desktop browsers.
 
       Bookmarks are tagged automatically. AI tagging runs through Wonton's model gateway, so there is no external API key to set up. Search across titles, tags and full text, or browse by lists, tags and date. The web app works well in a phone browser and can be added to the home screen as a PWA.
 
       Crawling is done by a built-in headless browser (it fetches the pages you save, so the plugin needs internet access) and full-text search runs on a built-in Meilisearch service.
+
+      After a core upgrade the containers are rebuilt with the new issuer automatically; nothing to reinstall. If the page then reports a corrupted plugin record, the core can't read the record written before the upgrade and reinstalling won't help.
   release_notes:
     zh: 首个版本：Karakeep 0.34.1，AI 打标走云吞的模型网关。
     en: "Initial release: Karakeep 0.34.1, with AI tagging via the Wonton model gateway."
