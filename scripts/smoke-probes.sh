@@ -342,6 +342,7 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
   curl -sS --noproxy '*' -o /dev/null -L -b "${SMOKE_JAR:-}" -c "${SMOKE_JAR:-}" \
     -H 'Accept: text/html' "${SMOKE_WEB_URL%/}/"
   resp="$(curl -sS --noproxy '*' --fail-with-body -b "${SMOKE_JAR:-}" -H 'Content-Type: application/json' \
+    -H "Origin: ${SMOKE_WEB_URL%/}" \
     -d "{\"email\":\"${SMOKE_OWNER:-owner}@wonton.internal\"}" "${SMOKE_WEB_URL:-}/api/auth/request-password-reset")" ||
     { echo "找回密码请求失败：$resp"; return 1; }
   echo "找回密码已请求（发往 $email）"
