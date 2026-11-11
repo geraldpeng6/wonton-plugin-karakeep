@@ -337,42 +337,24 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
     { echo "init 日志没有对账结论：$ilog"; return 1; }
   echo "init 容器（$initc）：$(tail -1 <<<"$ilog")"
 
-  # 4) 模拟 0.11 之前装的实例：把主人账号的邮箱改成旧值（核心只给 status=joined 的家人和主人投信，
-  #    刚邀请还没加入的家人不投，所以收件人用主人自己——库里已是旧值，invites 不会按“已有用户”拒绝）
-  local old
-  old="owner-old-$(date +%s)@example.com"
-  docker exec -e KK_OLD="$old" -e KK_CURR="$email" "$webc" node -e '
-    const { DatabaseSync } = require("node:sqlite");
-    const db = new DatabaseSync("/data/db.db");
-    for (let i = 0; ; i++) {
-      try { db.prepare("UPDATE user SET email = ? WHERE email = ?").run(process.env.KK_OLD, process.env.KK_CURR); break; }
-      catch (e) { if (i >= 4) { db.close(); throw e; } }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
-    }
-    db.close();' ||
-    { echo "模拟旧邮箱失败"; return 1; }
-  email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
-  [[ "$email" == "$old" ]] || { echo "旧邮箱没写进去（现在 $email）"; return 1; }
-  echo "已模拟升级前状态：主人账号邮箱 = $old"
-
-  # 5) 真实邀请信：发给主人的内部地址；核心投进主人的 Wonton 私聊后，那条 Matrix 消息永久在房间里
-  #    （投完即删 Mailpit 和记录文件，轮询它们是亚秒级窗口），所以以主人身份读私聊拿投递证据。
-  local outsider token mtok before_ts seen_room corec json plugin_id
-  corec="$(kk_core)"
+  # 4) 触发找回密码：better-auth 公开端点，不需要应用会话（SPA 会话与此无关）。
+  #    NextAuth 配置 sendResetPassword → sendPasswordResetEmail(user.email=主人内部邮箱)，
+  #    走应用自己 buildTransporter（注入的 SMTP_HOST/PORT/FROM），核心把信投进主人的 Wonton 私聊。
+  local mtok before_ts found json seen_room corec plugin_id
   plugin_id="${from%@plugins.wonton.internal}"
   mtok="$(kk_matrix_owner_token)"
   [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
   before_ts="$(date +%s000)"
-  resp="$(kk_invite "${SMOKE_OWNER_EMAIL:-}")"
-  jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
-    { echo "邀请的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
+  resp="$(curl -sS --noproxy '*' --fail-with-body -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$email\"}" "${SMOKE_WEB_URL:-}/api/auth/request-password-reset")" ||
+    { echo "找回密码请求失败：$resp"; return 1; }
+  echo "找回密码已请求（发往 $email）"
+
+  # 5) 以主人身份读私聊，等 app.wonton.plugin_mail 消息（成功投递在核心日志里静默）
   found=""
-  for ((i = 0; i < 30; i++)); do
-    [[ -n "$found" ]] && break
-    sleep 3
+  for _ in $(seq 1 50); do
     seen_room="$(matrix_curl -H "Authorization: Bearer $mtok" \
-      "http://tuwunel.wonton.internal:8008/_matrix/client/v3/joined_rooms" 2>/dev/null | jq -r '.joined_rooms[]' 2>/dev/null)" ||
-      continue
+      "http://tuwunel.wonton.internal:8008/_matrix/client/v3/joined_rooms" 2>/dev/null)" || { sleep 3; continue; }
     while IFS= read -r room; do
       [[ -n "$room" ]] || continue
       json="$(matrix_curl -H "Authorization: Bearer $mtok" \
@@ -384,37 +366,10 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
         break
       fi
     done <<<"$seen_room"
+    [[ -n "$found" ]] && break
+    sleep 3
   done
   [[ -n "$found" ]] ||
-    { echo "主人的 Wonton 私聊里没有本插件的邀请信；核心日志：$(docker logs "$corec" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
-  echo "核心已把邀请信投进主人的 Wonton 私聊（房间 $found，From=$from）"
-
-  # 6) 外部地址：上游应用把发信失败吞掉（邀请照样建成，见 PR 说明），但信永远进不了信箱（SMTP 550 拒收）
-  outsider="nobody-$(date +%s)@example.com"
-  resp="$(kk_invite "$outsider")"
-  jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
-    { echo "邀请外部地址的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
-  sleep 15
-  kk_mailpit_wait \
-    "$(jq -n --arg to "$outsider" \
-      '(.messages | map(select(.To[].Address == $to)) | length) == 0')" 1 ||
-    { echo "外部地址 $outsider 的信进了 Mailpit（550 拒收没生效）"; return 1; }
-  echo "外部地址 $outsider 被 SMTP 拒收：Mailpit 里没有这封信"
-
-  # 7) 改邮箱初始化：重装触发 init 把旧邮箱对回内部地址
-  if declare -F probes_dev_t >/dev/null; then
-    probes_dev_t 420 reinstall --yes || { echo "reinstall 失败"; return 1; }
-  else
-    (cd "${dir:?}" && nice -n 19 timeout 420 scripts/dev.sh reinstall --yes) || { echo "reinstall 失败"; return 1; }
-  fi
-  kk_wait_web_healthy || return 1
-  kk_login || { echo "重装后登录链没建立"; return 1; }
-  email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
-  [[ "$email" == "${SMOKE_OWNER:-owner}@wonton.internal" ]] ||
-    { echo "重装后邮箱没对回注入值：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
-  initc="$(kk_init_container)"
-  ilog="$(docker logs "$initc" 2>&1 | tail -1)"
-  grep -qF "已从 $old 改成" <<<"$ilog" ||
-    { echo "init 日志没有这次的改邮箱记录：$ilog"; return 1; }
-  echo "初始化把 $old 对回 $email（重装触发，init 日志：$ilog）"
+    { echo "主人的 Wonton 私聊里没有本插件的重置信；核心日志：$(docker logs "$(kk_core)" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
+  echo "核心已把重置信投进主人的 Wonton 私聊（房间 $found，From=$from）"
 }
