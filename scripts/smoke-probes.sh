@@ -225,7 +225,7 @@ data_check() { # 断言 data_write 写的书签还在、内容一字不差
   me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
     { echo "重装后 users/me 请求失败"; return 1; }
   email="$(jq -r '.email // empty' <<<"$me")"
-  [[ "$email" == "${SMOKE_OWNER_EMAIL:-}" ]] ||
+  [[ "$email" == "${SMOKE_OWNER_EMAIL:-${SMOKE_OWNER:-owner}@wonton.internal}" ]] ||
     { echo "重装后账号邮箱不是注入的主人邮箱：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
   # init 每次启动都对账一次；重装后日志要么「已从…改成」要么「已是内部邮箱」，值必须是内部地址
   local initc ilog
@@ -325,7 +325,7 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
     { echo "users/me 请求失败"; return 1; }
   email="$(jq -r '.email // empty' <<<"$me")"
-  [[ "$email" == "${SMOKE_OWNER_EMAIL:-}" ]] ||
+  [[ "$email" == "${SMOKE_OWNER_EMAIL:-${SMOKE_OWNER:-owner}@wonton.internal}" ]] ||
     { echo "账号邮箱不是注入的主人邮箱：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
   echo "主人账号邮箱 = $email"
 
@@ -410,7 +410,7 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   kk_wait_web_healthy || return 1
   kk_login || { echo "重装后登录链没建立"; return 1; }
   email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
-  [[ "$email" == "${SMOKE_OWNER_EMAIL:-}" ]] ||
+  [[ "$email" == "${SMOKE_OWNER_EMAIL:-${SMOKE_OWNER:-owner}@wonton.internal}" ]] ||
     { echo "重装后邮箱没对回注入值：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
   initc="$(kk_init_container)"
   ilog="$(docker logs "$initc" 2>&1 | tail -1)"
