@@ -336,7 +336,7 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
   mtok="$(kk_matrix_owner_token)"
   [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
   before_ts="$(date +%s000)"
-  docker exec -e KK_TO="${SMOKE_OWNER:-owner}@wonton.internal" "$webc" node -e '
+  docker exec -w /app/packages/trpc -e KK_TO="${SMOKE_OWNER:-owner}@wonton.internal" "$webc" node -e '
     const { createTransport } = require("nodemailer");
     const t = createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT), secure: false });
     t.sendMail({ from: process.env.SMTP_FROM, to: process.env.KK_TO,
