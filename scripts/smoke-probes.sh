@@ -27,6 +27,9 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
   SMOKE_JAR="${SMOKE_JAR:-${E2E_JAR:-}}"
   SMOKE_WEB_URL="${SMOKE_WEB_URL:-${E2E_WEB_URL:-}}"
   SMOKE_OWNER="${SMOKE_OWNER:-${E2E_OWNER:-}}"
+  # 主人邮箱：kit 的 probes_env 导出过；e2e 直调没有，就从实例 .env 读（kit 的 read_env/probes_setting、e2e 的 read_env 都行）。
+  SMOKE_OWNER_EMAIL="${SMOKE_OWNER_EMAIL:-$(read_env WONTON_OWNER_EMAIL 2>/dev/null)}"
+  SMOKE_OWNER_EMAIL="${SMOKE_OWNER_EMAIL:-$(probes_setting WONTON_OWNER_EMAIL 2>/dev/null)}"
   SMOKE_BASE="${SMOKE_BASE:-${E2E_BASE:-}}"
   SMOKE_TOKEN="${SMOKE_TOKEN:-${E2E_TOKEN:-}}"
   local name
@@ -217,12 +220,13 @@ data_check() { # 断言 data_write 写的书签还在、内容一字不差
   text="$(jq -r '.content.text // empty' <<<"$resp")"
   [[ "$text" == "$KK_BOOKMARK_TEXT" ]] ||
     { echo "书签内容对不上：期望「$KK_BOOKMARK_TEXT」，拿到「$text」"; return 1; }
-  # 账号邮箱在重装后仍是内部邮箱（init 每次启动都对账一次，值不变）
+  # 账号邮箱在重装后仍是对账过的注入值（init 每次启动都对账一次，值不变）。
+  # 比较对象用套件导出的 WONTON_OWNER_EMAIL 本身：e2e/kit 环境的值形制可能不同，别硬编码 @wonton.internal。
   me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
     { echo "重装后 users/me 请求失败"; return 1; }
   email="$(jq -r '.email // empty' <<<"$me")"
-  [[ "$email" == "$SMOKE_OWNER@wonton.internal" ]] ||
-    { echo "重装后账号邮箱不是内部邮箱：$email"; return 1; }
+  [[ "$email" == "${SMOKE_OWNER_EMAIL:-}" ]] ||
+    { echo "重装后账号邮箱不是注入的主人邮箱：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
   # init 每次启动都对账一次；重装后日志要么「已从…改成」要么「已是内部邮箱」，值必须是内部地址
   local initc ilog
   initc="$(kk_init_container)"
@@ -317,12 +321,12 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
     { echo "SMTP 变量不对：host=$smtp_host port=$smtp_port from=$from"; return 1; }
   echo "SMTP 变量已注入：$smtp_host:$smtp_port from=$from"
 
-  # 2) 主人账号的邮箱是内部邮箱（OIDC 声明 + 初始化对账后的结果）
+  # 2) 主人账号的邮箱是内部邮箱（OIDC 声明 + 初始化对账后的结果）；比较注入值本身，见 data_check 里的说明
   me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
     { echo "users/me 请求失败"; return 1; }
   email="$(jq -r '.email // empty' <<<"$me")"
-  [[ "$email" == "$SMOKE_OWNER@wonton.internal" ]] ||
-    { echo "账号邮箱不是内部邮箱：$email（期望 $SMOKE_OWNER@wonton.internal）"; return 1; }
+  [[ "$email" == "${SMOKE_OWNER_EMAIL:-}" ]] ||
+    { echo "账号邮箱不是注入的主人邮箱：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
   echo "主人账号邮箱 = $email"
 
   # 3) 一次性初始化在这次安装里跑过，日志有对账结论（装完还没登录过=还没建号；已登录=已是/已改）
@@ -359,7 +363,7 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   mtok="$(kk_matrix_owner_token)"
   [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
   before_ts="$(date +%s000)"
-  resp="$(kk_invite "$SMOKE_OWNER@wonton.internal")"
+  resp="$(kk_invite "${SMOKE_OWNER_EMAIL:-}")"
   jq -e '.[0].result.data.json.email // .result.data.json.email' <<<"$resp" >/dev/null 2>&1 ||
     { echo "邀请的 TRPC 没成功：$(head -c 200 <<<"$resp")"; return 1; }
   found=""
@@ -406,8 +410,8 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   kk_wait_web_healthy || return 1
   kk_login || { echo "重装后登录链没建立"; return 1; }
   email="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me" | jq -r '.email // empty')"
-  [[ "$email" == "$SMOKE_OWNER@wonton.internal" ]] ||
-    { echo "重装后邮箱没对回内部地址：$email"; return 1; }
+  [[ "$email" == "${SMOKE_OWNER_EMAIL:-}" ]] ||
+    { echo "重装后邮箱没对回注入值：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
   initc="$(kk_init_container)"
   ilog="$(docker logs "$initc" 2>&1 | tail -1)"
   grep -qF "已从 $old 改成" <<<"$ilog" ||
