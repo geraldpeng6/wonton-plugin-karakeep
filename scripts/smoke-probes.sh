@@ -328,24 +328,22 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
     { echo "init 日志没有对账结论：$ilog"; return 1; }
   echo "init 容器（$initc）：$(tail -1 <<<"$ilog")"
 
-  # 4) 触发找回密码：better-auth 公开端点，不需要应用会话（SPA 会话与此无关）。
-  #    NextAuth 配置 sendResetPassword → sendPasswordResetEmail(user.email=主人内部邮箱)，
-  #    走应用自己 buildTransporter（注入的 SMTP_HOST/PORT/FROM），核心把信投进主人的 Wonton 私聊。
+  # 4) 触发发信：部署是 OIDC-only（"Password authentication is currently disabled"），
+  #    找回密码路径天然不存在；按负责人指示用插件注入的同一组 SMTP 变量在容器里发一封信
+  #    ——与应用 email.ts 的 buildTransporter 同配置（host/port/from，无认证无 TLS），收件人=主人内部邮箱。
   local mtok before_ts found json seen_room corec plugin_id
   plugin_id="${from%@plugins.wonton.internal}"
   mtok="$(kk_matrix_owner_token)"
   [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
   before_ts="$(date +%s000)"
-  # 网关会话 Cookie 按域名落：先核心登录、再走一遍插件首页跳转（与 better-auth 无关，纯网关层）
-  curl -sS --noproxy '*' -o /dev/null -b "${SMOKE_JAR:-}" -c "${SMOKE_JAR:-}" \
-    --data-urlencode "token=${SMOKE_TOKEN:-}" "${SMOKE_BASE%/}/_wonton/login"
-  curl -sS --noproxy '*' -o /dev/null -L -b "${SMOKE_JAR:-}" -c "${SMOKE_JAR:-}" \
-    -H 'Accept: text/html' "${SMOKE_WEB_URL%/}/"
-  resp="$(curl -sS --noproxy '*' --fail-with-body -b "${SMOKE_JAR:-}" -H 'Content-Type: application/json' \
-    -H "Origin: ${SMOKE_WEB_URL%/}" \
-    -d "{\"email\":\"${SMOKE_OWNER:-owner}@wonton.internal\"}" "${SMOKE_WEB_URL:-}/api/auth/request-password-reset")" ||
-    { echo "找回密码请求失败：$resp"; return 1; }
-  echo "找回密码已请求（发往 $email）"
+  docker exec -e KK_TO="${SMOKE_OWNER:-owner}@wonton.internal" "$webc" node -e '
+    const { createTransport } = require("nodemailer");
+    const t = createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT), secure: false });
+    t.sendMail({ from: process.env.SMTP_FROM, to: process.env.KK_TO,
+      subject: "Karakeep smoke", text: "wonton-smoke-" + Date.now() },
+      (e) => { if (e) { console.error(e.message); process.exit(1); } });' ||
+    { echo "容器内发信失败"; return 1; }
+  echo "测试信已从容器内经注入的 SMTP 发出（收件人 ${SMOKE_OWNER:-owner}@wonton.internal）"
 
   # 5) 以主人身份读私聊，等 app.wonton.plugin_mail 消息（成功投递在核心日志里静默）
   found=""
