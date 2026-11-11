@@ -1,6 +1,6 @@
 # Karakeep 书签插件
 
-开发流程见[插件开发指南](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md)。
+开发流程见[插件开发指南](https://github.com/wontonapp/wonton-docs/blob/main/develop.md)。
 
 这个仓库是 [Karakeep](https://karakeep.com) 插件：收藏链接、笔记和图片，自动抓取标题、正文和整页截图，
 AI 自动打标签，全文搜索。登录交给云吞的身份提供方（`sso: oidc`，上游 Better Auth 的 OIDC），
