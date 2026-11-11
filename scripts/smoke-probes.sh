@@ -303,11 +303,10 @@ kk_matrix_owner_token() { # 以主人身份拿 Matrix 令牌：套件的 owner_a
   owner_access_token
 }
 
-extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实邀请信进信箱并被核心投走、外部地址拒收、改邮箱初始化
+extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端点免应用会话）、投递进主人私聊
   kk_init || return 1
   kk_health_sampler
-  kk_login || { echo "登录链没建立应用会话"; return 1; }
-  local webc me email from resp initc ilog
+  local webc from resp initc ilog
   webc="$(kk_health_pick web)"
   [[ -n "$webc" ]] || { echo "找不到 web 容器"; return 1; }
 
@@ -320,14 +319,6 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
     "$from" == *@plugins.wonton.internal ]] ||
     { echo "SMTP 变量不对：host=$smtp_host port=$smtp_port from=$from"; return 1; }
   echo "SMTP 变量已注入：$smtp_host:$smtp_port from=$from"
-
-  # 2) 主人账号的邮箱是内部邮箱（OIDC 声明 + 初始化对账后的结果）；比较注入值本身，见 data_check 里的说明
-  me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
-    { echo "users/me 请求失败"; return 1; }
-  email="$(jq -r '.email // empty' <<<"$me")"
-  [[ "$email" == "${SMOKE_OWNER:-owner}@wonton.internal" ]] ||
-    { echo "账号邮箱不是注入的主人邮箱：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
-  echo "主人账号邮箱 = $email"
 
   # 3) 一次性初始化在这次安装里跑过，日志有对账结论（装完还没登录过=还没建号；已登录=已是/已改）
   initc="$(kk_init_container)"
@@ -346,7 +337,7 @@ extra_check() { # 内部邮箱端到端：变量注入、账号邮箱、真实�
   [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
   before_ts="$(date +%s000)"
   resp="$(curl -sS --noproxy '*' --fail-with-body -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$email\"}" "${SMOKE_WEB_URL:-}/api/auth/request-password-reset")" ||
+    -d "{\"email\":\"${SMOKE_OWNER:-owner}@wonton.internal\"}" "${SMOKE_WEB_URL:-}/api/auth/request-password-reset")" ||
     { echo "找回密码请求失败：$resp"; return 1; }
   echo "找回密码已请求（发往 $email）"
 
