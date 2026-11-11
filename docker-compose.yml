@@ -83,8 +83,8 @@ x-wonton:
   id: app.karakeep.karakeep
   version: 0.1.0
   kind: app
-  title: { en: Karakeep }
-  description: { zh: 收藏网页、笔记和图片，自动抓取，AI 打标签，全文搜索, en: "Save links, notes and images with automatic AI tagging and full-text search" }
+  title: { zh: 智能收藏夹（Karakeep）, en: Smart Bookmarks (Karakeep) }
+  description: { zh: 像微信收藏：网址、文章、笔记、图片都能存进来，自动打好标签，日后搜里面的内容就能找回。适合看到什么都想先存下来的人。, en: "A save-it-for-later box for everything: keep links, articles, notes and images, get tags added automatically, and find anything later by searching what's inside." }
   icon: icon.png
   notices: [NOTICE]
   screenshots: [screenshots/home.png, screenshots/search.png, screenshots/tags.png]
