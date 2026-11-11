@@ -336,8 +336,11 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
   mtok="$(kk_matrix_owner_token)"
   [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
   before_ts="$(date +%s000)"
-  docker exec -w /app/packages/trpc -e KK_TO="${SMOKE_OWNER:-owner}@wonton.internal" "$webc" node -e '
-    const { createTransport } = require("nodemailer");
+  local nm_dir
+  nm_dir="$(docker exec "$webc" sh -c 'find /app -maxdepth 7 -type d -name nodemailer 2>/dev/null | head -1')"
+  [[ -n "$nm_dir" ]] || { echo "镜像里找不到 nodemailer 包目录"; return 1; }
+  docker exec -e NM_DIR="$nm_dir" -e KK_TO="${SMOKE_OWNER:-owner}@wonton.internal" "$webc" node -e '
+    const { createTransport } = require(process.env.NM_DIR);
     const t = createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT), secure: false });
     t.sendMail({ from: process.env.SMTP_FROM, to: process.env.KK_TO,
       subject: "Karakeep smoke", text: "wonton-smoke-" + Date.now() },
