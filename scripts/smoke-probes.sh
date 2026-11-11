@@ -27,8 +27,8 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
   SMOKE_JAR="${SMOKE_JAR:-${E2E_JAR:-}}"
   SMOKE_WEB_URL="${SMOKE_WEB_URL:-${E2E_WEB_URL:-}}"
   SMOKE_OWNER="${SMOKE_OWNER:-${E2E_OWNER:-}}"
-  # 主人邮箱：kit 的 probes_env 导出过；e2e 直调没有，就从实例 .env 读（kit 的 read_env/probes_setting、e2e 的 read_env 都行）。
-  SMOKE_OWNER_EMAIL="${SMOKE_OWNER_EMAIL:-$(read_env WONTON_OWNER_EMAIL 2>/dev/null)}"
+  # 主人邮箱：kit 的 probes_env 导出过；e2e 直调没有——按 #87 约定由 SMOKE_OWNER 推导（<用户名>@wonton.internal）。
+  SMOKE_OWNER_EMAIL="${SMOKE_OWNER_EMAIL:-${SMOKE_OWNER:+"${SMOKE_OWNER}@wonton.internal"}}"
   SMOKE_OWNER_EMAIL="${SMOKE_OWNER_EMAIL:-$(probes_setting WONTON_OWNER_EMAIL 2>/dev/null)}"
   SMOKE_BASE="${SMOKE_BASE:-${E2E_BASE:-}}"
   SMOKE_TOKEN="${SMOKE_TOKEN:-${E2E_TOKEN:-}}"
