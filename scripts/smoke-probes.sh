@@ -336,7 +336,12 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
   mtok="$(kk_matrix_owner_token)"
   [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
   before_ts="$(date +%s000)"
-  resp="$(curl -sS --noproxy '*' --fail-with-body -H 'Content-Type: application/json' \
+  # 网关会话 Cookie 按域名落：先核心登录、再走一遍插件首页跳转（与 better-auth 无关，纯网关层）
+  curl -sS --noproxy '*' -o /dev/null -b "${SMOKE_JAR:-}" -c "${SMOKE_JAR:-}" \
+    --data-urlencode "token=${SMOKE_TOKEN:-}" "${SMOKE_BASE%/}/_wonton/login"
+  curl -sS --noproxy '*' -o /dev/null -L -b "${SMOKE_JAR:-}" -c "${SMOKE_JAR:-}" \
+    -H 'Accept: text/html' "${SMOKE_WEB_URL%/}/"
+  resp="$(curl -sS --noproxy '*' --fail-with-body -b "${SMOKE_JAR:-}" -H 'Content-Type: application/json' \
     -d "{\"email\":\"${SMOKE_OWNER:-owner}@wonton.internal\"}" "${SMOKE_WEB_URL:-}/api/auth/request-password-reset")" ||
     { echo "找回密码请求失败：$resp"; return 1; }
   echo "找回密码已请求（发往 $email）"
