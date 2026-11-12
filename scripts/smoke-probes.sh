@@ -251,7 +251,7 @@ kmail_data_dir() { # 核心数据目录（Mailpit 的库、投递记录都在它
 }
 
 kmail_mailpit() { # <path>：调 Mailpit API（basic core:<api-password>）。主路照核心自己的冒烟：在核心网络里
-  # 打 mailpit.wonton.internal:8025（curl 镜像，remote-dev/e2e 起栈都预推）；兜底 web 容器的 wget。
+  # 打 mailpit.wonton.internal:8025（curl 镜像；核心和插件的镜像里都预拉了）。兜底走 web 容器的 wget。
   local core webc pw dd out
   core="$(kmail_core)" || { echo "找不到核心容器 wonton-$SMOKE_INSTANCE--core"; return 1; }
   dd="$(kmail_data_dir)"
