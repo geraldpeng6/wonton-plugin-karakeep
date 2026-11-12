@@ -22,7 +22,7 @@ MCP=0
 web_assert() { grep -qE '<title[^>]*>[Kk]arakeep'; }
 
 # ---------- 探针内部助手：只用套件保证的变量 ----------
-kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 run_hook 的 SMOKE_* 导出（底座缺口，见 PR），
+kmail_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 run_hook 的 SMOKE_* 导出（底座缺口，见 PR），
   # 过渡期回退到同值的 E2E_*；套件在直调前补导出后这里自动只用 SMOKE_*，兜底可删。
   SMOKE_JAR="${SMOKE_JAR:-${E2E_JAR:-}}"
   SMOKE_WEB_URL="${SMOKE_WEB_URL:-${E2E_WEB_URL:-}}"
@@ -38,12 +38,12 @@ kk_init() { # 契约变量的兜底：e2e 的 identity_check 是直调，不走 
   done
 }
 
-kk_health_pick() { # <svc>：兼容两种容器命名（compose 项目式 wonton-plugin-<名>-<svc>-1 / 规范式 wonton-<实例>--<名>--<svc>）
+kmail_health_pick() { # <svc>：兼容两种容器命名（compose 项目式 wonton-plugin-<名>-<svc>-1 / 规范式 wonton-<实例>--<名>--<svc>）
   docker ps --format '{{.Names}}' 2>/dev/null | grep -i "karakeep" |
     grep -E "(--|[-_.])${1}([-_][0-9]+)?$" | head -1
 }
 
-kk_health_loop() { # 采样循环（kk_health_sampler 用 setsid 脱离后跑）：每 10s 记一行紧凑健康状态。
+kmail_health_loop() { # 采样循环（kmail_health_sampler 用 setsid 脱离后跑）：每 10s 记一行紧凑健康状态。
   # 写文件不写 stderr：钩子返回后冒烟不再读它的输出管道，写了也会被 SIGPIPE 杀掉（11-07 实测）。
   # pid 幂等：pid 文件活着就直接退；容器连续 3 次找不到就自退
   local prog n h miss=0 found sf=/tmp/kk-health-sampler.log pf=/tmp/kk-health-sampler.pid
@@ -55,7 +55,7 @@ kk_health_loop() { # 采样循环（kk_health_sampler 用 setsid 脱离后跑）
   while :; do
     found=0
     for c in web chrome meilisearch; do
-      n="$(kk_health_pick "$c")"
+      n="$(kmail_health_pick "$c")"
       [[ -n "$n" ]] || continue
       found=1
       h="$(docker inspect "$n" --format '{{json .State.Health}}' 2>/dev/null)" || h=""
@@ -71,21 +71,21 @@ kk_health_loop() { # 采样循环（kk_health_sampler 用 setsid 脱离后跑）
   done
 }
 
-kk_health_sampler() { # 起采样器（幂等）；输出进 /tmp/kk-health-sampler.log，由 kk_health_dump 同步带进冒烟日志
+kmail_health_sampler() { # 起采样器（幂等）；输出进 /tmp/kk-health-sampler.log，由 kmail_health_dump 同步带进冒烟日志
   local pf=/tmp/kk-health-sampler.pid
   [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null && return 0
-  export -f kk_health_loop
-  export -f kk_health_pick
-  setsid bash -c kk_health_loop </dev/null >/dev/null 2>&1 &
+  export -f kmail_health_loop
+  export -f kmail_health_pick
+  setsid bash -c kmail_health_loop </dev/null >/dev/null 2>&1 &
   echo "HEALTH 采样器已启动（输出见 /tmp/kk-health-sampler.log，钩子会带回）" >&2
 }
 
-kk_health_dump() { # 全量落盘（钩子内同步执行，肯定能进冒烟日志）：采样行 + 每容器 StartedAt + 完整 Health json
+kmail_health_dump() { # 全量落盘（钩子内同步执行，肯定能进冒烟日志）：采样行 + 每容器 StartedAt + 完整 Health json
   local n
   [[ -f /tmp/kk-health-sampler.log ]] && { echo "===== HEALTH 采样记录 =====" >&2; cat /tmp/kk-health-sampler.log >&2; }
   echo "===== HEALTH-DUMP =====" >&2
   for c in web chrome meilisearch; do
-    n="$(kk_health_pick "$c")"
+    n="$(kmail_health_pick "$c")"
     [[ -n "$n" ]] || { echo "（找不到 $c 容器）" >&2; continue; }
     # 不能写 "2>/dev/null >&2"：stderr 先指到 /dev/null，stdout 再复制过去就进了 /dev/null（实测吞输出）
     echo "HEALTH-DUMP $n StartedAt=$(docker inspect -f '{{.State.StartedAt}}' "$n" 2>/dev/null)" >&2
@@ -93,15 +93,15 @@ kk_health_dump() { # 全量落盘（钩子内同步执行，肯定能进冒烟�
   done
 }
 
-kk_app_log_tail() { # 诊断用（负责人要求）：应用容器日志最后 50 行 + 三个容器的健康状态；503 复现时这些和 x-wonton-error 一起写 .stop
+kmail_app_log_tail() { # 诊断用（负责人要求）：应用容器日志最后 50 行 + 三个容器的健康状态；503 复现时这些和 x-wonton-error 一起写 .stop
   local n
   echo "===== karakeep 三个容器健康状态（docker inspect）=====" >&2
   for c in web chrome meilisearch; do
-    n="$(kk_health_pick "$c")"
+    n="$(kmail_health_pick "$c")"
     [[ -n "$n" ]] || { echo "（找不到 $c 容器）" >&2; continue; }
     echo "$n: $(docker inspect --format '{{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} 连败={{if .State.Health}}{{.State.Health.FailingStreak}}{{else}}0{{end}}' "$n" 2>/dev/null || echo "inspect 拿不到")" >&2
   done
-  n="$(kk_health_pick web)"
+  n="$(kmail_health_pick web)"
   if [[ -z "$n" ]]; then
     echo "诊断：karakeep 应用容器日志拿不到（docker 不在本机或容器不在跑）" >&2
     return 0
@@ -111,14 +111,14 @@ kk_app_log_tail() { # 诊断用（负责人要求）：应用容器日志最后 
   echo "===== 容器日志完 =====" >&2
 }
 
-kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测的结论）：
+kmail_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测的结论）：
   # 1) 核心会话：token POST 返回 303 但不发 cookie（jar 为空，同 jar GET 插件域 401），
   #    必须走 dev.sh 的表单登录回退——用 dweb，并把它写会话的 jar 指到 SMOKE_JAR
   #    （WONTON_DEV_JAR 是 dev.sh 的公开入口，session_jar 读它）。
   # 2) 应用会话：Karakeep 的自动跳转是客户端 JS（signIn.social），curl 触发不了，
   #    手动 POST 应用自己的 /api/auth/sign-in/social 拿 provider 地址，带 jar 走 Hydra → 回调建会话。
   # 成功判据：jar 里有 better-auth 会话 cookie 且 /api/v1/users/me 返回 200。
-  kk_init || return 1
+  kmail_init || return 1
   export WONTON_DEV_JAR="$SMOKE_JAR"
   local try resp oauth_url
   # 诊断（负责人要求）：SMOKE_WEB_URL 与 dweb 实际用的地址是否同一实例同一 slug
@@ -145,7 +145,7 @@ kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测�
     fi
     if [[ -z "$oauth_url" ]]; then
       echo "social 端点没返回 provider 地址（HTTP $(echo "$meta" | cut -d' ' -f1)），正文：$(head -c 120 <<<"$body")" >&2
-      kk_app_log_tail
+      kmail_app_log_tail
       (( try < 3 )) && sleep 10
       continue
     fi
@@ -159,12 +159,12 @@ kk_login() { # 分两步把两个会话都建好（2026-11-07 e2e 逐轮实测�
     (( try < 3 )) && sleep 10
   done
   echo "OIDC 登录链没建立应用会话" >&2
-  kk_app_log_tail
+  kmail_app_log_tail
   return 1
 }
 
 
-kk_state_write() { # 覆盖写标记文件；套件的 dev.sh probes 里 SMOKE_STATE 是状态目录（不跑数据钩子），跳过。
+kmail_state_write() { # 覆盖写标记文件；套件的 dev.sh probes 里 SMOKE_STATE 是状态目录（不跑数据钩子），跳过。
   # 值用 %q 转义：文本里有空格/中文，data_check 要用 source 读回来
   [[ -d ${SMOKE_STATE:-} ]] && return 0
   printf 'KK_BOOKMARK_ID=%q\nKK_BOOKMARK_TEXT=%q\n' "$1" "$2" >"$SMOKE_STATE" ||
@@ -172,9 +172,9 @@ kk_state_write() { # 覆盖写标记文件；套件的 dev.sh probes 里 SMOKE_S
 }
 
 identity_check() { # 应用认出的是主人本人：/api/v1/users/me（OAuth 会话）的名字是主人，且是 OIDC 建的号（非本地密码账号）
-  kk_init || return 1
-  kk_health_sampler
-  kk_login || { echo "登录链没建立应用会话"; return 1; }
+  kmail_init || return 1
+  kmail_health_sampler
+  kmail_login || { echo "登录链没建立应用会话"; return 1; }
   local me
   me="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" "${SMOKE_WEB_URL:-}/api/v1/users/me")" ||
     { echo "users/me 请求失败"; return 1; }
@@ -188,13 +188,13 @@ identity_check() { # 应用认出的是主人本人：/api/v1/users/me（OAuth �
       { echo "当前用户是本地密码账号：$me"; return 1; }
   fi
   echo "当前用户：$(jq -r .name <<<"$me")" >&2
-  kk_health_dump
+  kmail_health_dump
 }
 
 data_write() { # 写一条真实书签（文字书签，内容带时间戳），id 和内容随标记文件覆盖写
-  kk_init || return 1
-  kk_health_sampler
-  kk_login || { echo "登录链没建立应用会话"; return 1; }
+  kmail_init || return 1
+  kmail_health_sampler
+  kmail_login || { echo "登录链没建立应用会话"; return 1; }
   local text id resp
   text="云吞 e2e 数据探针 $(date +%Y%m%d%H%M%S)"
   resp="$(curl -fsS --noproxy '*' -b "$SMOKE_JAR" -X POST \
@@ -203,12 +203,12 @@ data_write() { # 写一条真实书签（文字书签，内容带时间戳），
     "${SMOKE_WEB_URL:-}/api/v1/bookmarks")" || { echo "建书签失败"; return 1; }
   id="$(jq -r '.id // empty' <<<"$resp")"
   [[ -n "$id" ]] || { echo "建书签响应没有 id：$(head -c 200 <<<"$resp")"; return 1; }
-  kk_state_write "$id" "$text"
+  kmail_state_write "$id" "$text"
 }
 
 data_check() { # 断言 data_write 写的书签还在、内容一字不差
-  kk_init || return 1
-  kk_health_sampler
+  kmail_init || return 1
+  kmail_health_sampler
   [[ -f ${SMOKE_STATE:-} && -s "$SMOKE_STATE" ]] || { echo "标记文件里没有数据：先跑 data_write"; return 1; }
   # shellcheck source=/dev/null
   . "$SMOKE_STATE"
@@ -229,32 +229,32 @@ data_check() { # 断言 data_write 写的书签还在、内容一字不差
     { echo "重装后账号邮箱不是注入的主人邮箱：$email（期望 $SMOKE_OWNER_EMAIL）"; return 1; }
   # init 每次启动都对账一次；重装后日志要么「已从…改成」要么「已是内部邮箱」，值必须是内部地址
   local initc ilog
-  initc="$(kk_init_container)"
+  initc="$(kmail_init_container)"
   ilog="$(docker logs "$initc" 2>&1 | tail -1)"
   grep -qE "已从 .+ 改成|已是内部邮箱" <<<"$ilog" ||
     { echo "init 日志没有对账结论：$ilog"; return 1; }
   echo "重装后数据核对通过：书签 $KK_BOOKMARK_ID，账号邮箱仍是 $email（init：$ilog）" >&2
-  kk_health_dump
+  kmail_health_dump
 }
 
 # ---------- 邮件（notify，规范 0.11）----------
-kk_core() { # 核心容器：信箱 API 的密码在它挂的数据目录里，Mailpit 的别名也在它的网络上
+kmail_core() { # 核心容器：信箱 API 的密码在它挂的数据目录里，Mailpit 的别名也在它的网络上
   docker ps --format '{{.Names}}' | grep -xE "wonton-${SMOKE_INSTANCE}--core" | head -1
 }
 
-kk_init_container() { # 一次性改邮箱的容器（重装会重建，名字不变）
+kmail_init_container() { # 一次性改邮箱的容器（重装会重建，名字不变）
   docker ps -a --format '{{.Names}}' | grep -E "init-owner-email" | grep "$SMOKE_INSTANCE" | head -1
 }
 
-kk_data_dir() { # 核心数据目录（Mailpit 的库、投递记录都在它下面）
+kmail_data_dir() { # 核心数据目录（Mailpit 的库、投递记录都在它下面）
   if declare -F read_env >/dev/null; then read_env WONTON_DATA_DIR; else probes_setting WONTON_DATA_DIR; fi
 }
 
-kk_mailpit() { # <path>：调 Mailpit API（basic core:<api-password>）。主路照核心自己的冒烟：在核心网络里
+kmail_mailpit() { # <path>：调 Mailpit API（basic core:<api-password>）。主路照核心自己的冒烟：在核心网络里
   # 打 mailpit.wonton.internal:8025（curl 镜像，remote-dev/e2e 起栈都预推）；兜底 web 容器的 wget。
   local core webc pw dd out
-  core="$(kk_core)" || { echo "找不到核心容器 wonton-$SMOKE_INSTANCE--core"; return 1; }
-  dd="$(kk_data_dir)"
+  core="$(kmail_core)" || { echo "找不到核心容器 wonton-$SMOKE_INSTANCE--core"; return 1; }
+  dd="$(kmail_data_dir)"
   pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
   [[ -n "$pw" ]] || pw="$(docker exec "$core" sh -c 'cat "$(find / -maxdepth 6 -path "*/core/mailpit/api-password" 2>/dev/null | head -1)"' 2>/dev/null)"
   [[ -n "${pw:-}" ]] || { echo "读不到 Mailpit API 密码（核心数据目录 core/mailpit/api-password）"; return 1; }
@@ -265,32 +265,32 @@ kk_mailpit() { # <path>：调 Mailpit API（basic core:<api-password>）。主�
     return 0
   fi
   echo "Mailpit 主路（核心网络 curl）没拿到 JSON：$(head -c 200 <<<"$out")" >&2
-  webc="$(kk_health_pick web)"
+  webc="$(kmail_health_pick web)"
   [[ -n "$webc" ]] || return 1
   docker exec "$webc" wget -qO- \
     --header "Authorization: Basic $(printf 'core:%s' "$pw" | base64 | tr -d '\n')" \
     "http://smtp.wonton.internal:8025$1" 2>&1
 }
 
-kk_mailpit_wait() { # <jq 过滤> [次数=40]：轮询 Mailpit 信箱直到过滤命中；过滤里的值先经 jq 转成字面量
+kmail_mailpit_wait() { # <jq 过滤> [次数=40]：轮询 Mailpit 信箱直到过滤命中；过滤里的值先经 jq 转成字面量
   local filt="$1" n="${2:-40}" i out
   for ((i = 0; i < n; i++)); do
-    out="$(kk_mailpit "/api/v1/messages?limit=100")" || { sleep 2; continue; }
+    out="$(kmail_mailpit "/api/v1/messages?limit=100")" || { sleep 2; continue; }
     jq -e "$filt" <<<"$out" >/dev/null 2>&1 && return 0
     sleep 2
   done
   return 1
 }
 
-kk_invite() { # <email>：管理员建用户邀请（上游 TRPC invites.create）
+kmail_invite() { # <email>：管理员建用户邀请（上游 TRPC invites.create）
   curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Content-Type: application/json' -H "Origin: $SMOKE_WEB_URL" \
     --data "{\"0\":{\"json\":{\"email\":\"$1\"}}}" "${SMOKE_WEB_URL:-}/api/trpc/invites.create?batch=1"
 }
 
-kk_wait_web_healthy() { # 重装后等 web 回到 healthy（最久 150 秒）
+kmail_wait_web_healthy() { # 重装后等 web 回到 healthy（最久 150 秒）
   local i n
   for ((i = 0; i < 30; i++)); do
-    n="$(kk_health_pick web)"
+    n="$(kmail_health_pick web)"
     [[ -n "$n" ]] && [[ "$(docker inspect -f '{{.State.Health.Status}}' "$n" 2>/dev/null)" == healthy ]] && return 0
     sleep 5
   done
@@ -298,16 +298,16 @@ kk_wait_web_healthy() { # 重装后等 web 回到 healthy（最久 150 秒）
   return 1
 }
 
-kk_matrix_owner_token() { # 以主人身份拿 Matrix 令牌：套件的 owner_access_token（管理令牌 impersonation）
+kmail_matrix_owner_token() { # 以主人身份拿 Matrix 令牌：套件的 owner_access_token（管理令牌 impersonation）
   local tuwunel="http://tuwunel.wonton.internal:8008"
   owner_access_token
 }
 
 extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端点免应用会话）、投递进主人私聊
-  kk_init || return 1
-  kk_health_sampler
+  kmail_init || return 1
+  kmail_health_sampler
   local webc from resp initc ilog
-  webc="$(kk_health_pick web)"
+  webc="$(kmail_health_pick web)"
   [[ -n "$webc" ]] || { echo "找不到 web 容器"; return 1; }
 
   # 1) 三个 SMTP 变量进了 web 容器（compose 把 WONTON_SMTP_* 映射成上游的 SMTP_*）
@@ -321,7 +321,7 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
   echo "SMTP 变量已注入：$smtp_host:$smtp_port from=$from"
 
   # 3) 一次性初始化在这次安装里跑过，日志有对账结论（装完还没登录过=还没建号；已登录=已是/已改）
-  initc="$(kk_init_container)"
+  initc="$(kmail_init_container)"
   [[ -n "$initc" ]] || { echo "找不到 init-owner-email 容器"; return 1; }
   ilog="$(docker logs "$initc" 2>&1 | tail -2)"
   grep -qE "已是内部邮箱|已从 .+ 改成|还没登录过|还没建库" <<<"$ilog" ||
@@ -333,7 +333,7 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
   #    ——与应用 email.ts 的 buildTransporter 同配置（host/port/from，无认证无 TLS），收件人=主人内部邮箱。
   local mtok before_ts found json seen_room corec plugin_id
   plugin_id="${from%@plugins.wonton.internal}"
-  mtok="$(kk_matrix_owner_token)"
+  mtok="$(kmail_matrix_owner_token)"
   [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
   before_ts="$(date +%s000)"
   local nm_dir
@@ -369,6 +369,6 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
     sleep 3
   done
   [[ -n "$found" ]] ||
-    { echo "主人的 Wonton 私聊里没有本插件的重置信；核心日志：$(docker logs "$(kk_core)" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
+    { echo "主人的 Wonton 私聊里没有本插件的重置信；核心日志：$(docker logs "$(kmail_core)" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
   echo "核心已把重置信投进主人的 Wonton 私聊（房间 $found，From=$from）"
 }
