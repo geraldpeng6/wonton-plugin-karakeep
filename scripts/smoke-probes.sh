@@ -350,7 +350,8 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
 
   # 5) 以主人身份读私聊，等 app.wonton.plugin_mail 消息（成功投递在核心日志里静默）
   found=""
-  for _ in $(seq 1 50); do
+  # Mailpit websocket 偶发断连会让核心走「重连后补漏」，投递可能晚于 150 秒，窗口放宽到 300 秒。
+  for _ in $(seq 1 100); do
     seen_room="$(matrix_curl -H "Authorization: Bearer $mtok" \
       "http://tuwunel.wonton.internal:8008/_matrix/client/v3/joined_rooms" 2>/dev/null)" || { sleep 3; continue; }
     while IFS= read -r room; do
