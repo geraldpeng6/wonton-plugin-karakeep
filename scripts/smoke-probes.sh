@@ -338,7 +338,10 @@ extra_check() { # 邮件端到端：SMTP 变量注入、容器内发信、投递
   [[ -n "$nm_dir" ]] || { echo "镜像里找不到 nodemailer 包目录"; return 1; }
   docker exec -e NM_DIR="$nm_dir" -e KK_TO="${SMOKE_OWNER:-owner}@wonton.internal" "$webc" node -e '
     const { createTransport } = require(process.env.NM_DIR);
-    const t = createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT), secure: false });
+    // 核心 SMTP 不加密：25 端口若宣告 STARTTLS，nodemailer 会尝试升级并用自签证书验证失败，
+    // 按 plugin-spec「发信」一节（不开 TLS 或 STARTTLS）显式关掉。
+    const t = createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT),
+      secure: false, ignoreTLS: true, tls: { rejectUnauthorized: false } });
     t.sendMail({ from: process.env.SMTP_FROM, to: process.env.KK_TO,
       subject: "Karakeep smoke", text: "wonton-smoke-" + Date.now() },
       (e) => { if (e) { console.error(e.message); process.exit(1); } });' ||
