@@ -300,6 +300,8 @@ kmail_wait_web_healthy() { # 重装后等 web 回到 healthy（最久 150 秒）
 
 kmail_matrix_owner_token() { # 以主人身份拿 Matrix 令牌：套件的 owner_access_token（管理令牌 impersonation）
   local tuwunel="http://tuwunel.wonton.internal:8008"
+  declare -F owner_access_token >/dev/null ||
+    { echo "需要 e2e 套件的 owner_access_token（读主人私聊拿投递证据用）"; return 1; }
   owner_access_token
 }
 
