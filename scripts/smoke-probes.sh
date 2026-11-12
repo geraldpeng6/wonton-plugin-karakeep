@@ -298,14 +298,7 @@ kmail_wait_web_healthy() { # 重装后等 web 回到 healthy（最久 150 秒）
   return 1
 }
 
-kmail_matrix_owner_token() { # 以主人身份拿 Matrix 令牌：套件的 owner_access_token（管理令牌 impersonation）
-  local tuwunel="http://tuwunel.wonton.internal:8008"
-  declare -F owner_access_token >/dev/null ||
-    { echo "需要 e2e 套件的 owner_access_token（读主人私聊拿投递证据用）"; return 1; }
-  owner_access_token
-}
-
-extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端点免应用会话）、投递进主人私聊
+extra_check() { # 邮件端到端：SMTP 变量注入、容器内发信、投递进主人私聊（套件房间等待助手）、外部拒收对账
   kmail_init || return 1
   kmail_health_sampler
   local webc from resp initc ilog
@@ -333,11 +326,13 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
   # 4) 触发发信：部署是 OIDC-only（"Password authentication is currently disabled"），
   #    找回密码路径天然不存在；按负责人指示用插件注入的同一组 SMTP 变量在容器里发一封信
   #    ——与应用 email.ts 的 buildTransporter 同配置（host/port/from，无认证无 TLS），收件人=主人内部邮箱。
-  local mtok before_ts found json seen_room corec plugin_id
+  # 等待先挂后台再触发（套件的用法）：信进私聊是秒级投递，先等后发才等得到。
+  # 投递证据用套件的通知房间等待助手（probes_owner_room_wait），与 koel/librephotos 同款。
+  local room_out wp corec plugin_id
   plugin_id="${from%@plugins.wonton.internal}"
-  mtok="$(kmail_matrix_owner_token)"
-  [[ -n "$mtok" ]] || { echo "主人 Matrix 登录失败（读私聊拿投递证据用）"; return 1; }
-  before_ts="$(date +%s000)"
+  room_out="$(mktemp)"
+  probes_owner_room_wait 150 "Karakeep" >"$room_out" &
+  wp=$!
   local nm_dir
   nm_dir="$(docker exec "$webc" sh -c 'find /app -maxdepth 7 -type d -name nodemailer 2>/dev/null | head -1')"
   [[ -n "$nm_dir" ]] || { echo "镜像里找不到 nodemailer 包目录"; return 1; }
@@ -350,27 +345,12 @@ extra_check() { # 邮件端到端：SMTP 变量注入、找回密码（公开端
     { echo "容器内发信失败"; return 1; }
   echo "测试信已从容器内经注入的 SMTP 发出（收件人 ${SMOKE_OWNER:-owner}@wonton.internal）"
 
-  # 5) 以主人身份读私聊，等 app.wonton.plugin_mail 消息（成功投递在核心日志里静默）
-  found=""
-  # Mailpit websocket 偶发断连会让核心走「重连后补漏」，投递可能晚于 150 秒，窗口放宽到 300 秒。
-  for _ in $(seq 1 100); do
-    seen_room="$(matrix_curl -H "Authorization: Bearer $mtok" \
-      "http://tuwunel.wonton.internal:8008/_matrix/client/v3/joined_rooms" 2>/dev/null)" || { sleep 3; continue; }
-    while IFS= read -r room; do
-      [[ -n "$room" ]] || continue
-      json="$(matrix_curl -H "Authorization: Bearer $mtok" \
-        "http://tuwunel.wonton.internal:8008/_matrix/client/v3/rooms/$(printf '%s' "$room" | sed 's/!/%21/g;s/:/%3A/g')/messages?dir=b&limit=30" 2>/dev/null)" || continue
-      if jq -e --arg p "$plugin_id" --argjson t "$before_ts" '.chunk[] |
-          select(.type == "m.room.message" and .origin_server_ts >= $t and
-          .content["app.wonton.plugin_mail"].plugin_id == $p)' <<<"$json" >/dev/null 2>&1; then
-        found="$room"
-        break
-      fi
-    done <<<"$seen_room"
-    [[ -n "$found" ]] && break
-    sleep 3
-  done
-  [[ -n "$found" ]] ||
-    { echo "主人的 Wonton 私聊里没有本插件的重置信；核心日志：$(docker logs "$(kmail_core)" 2>&1 | grep -iE '信件|Mailpit' | tail -2 | tr '\n' ' ')"; return 1; }
-  echo "核心已把重置信投进主人的 Wonton 私聊（房间 $found，From=$from）"
+  # 5) 等套件房间等待助手看到投递（先等后发，等待已在触发前挂起）
+  if wait "$wp"; then
+    cat "$room_out"
+    rm -f "$room_out"
+  else
+    { echo "Karakeep 的测试信没进主人的 Wonton 私聊：$(cat "$room_out")"; rm -f "$room_out"; return 1; }
+  fi
+  echo "核心已把 Karakeep 的测试信投进主人的 Wonton 私聊（From=$from）"
 }
