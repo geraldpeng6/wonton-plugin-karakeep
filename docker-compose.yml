@@ -121,10 +121,12 @@ services:
       start_interval: 2s
 
   meilisearch:
-    image: getmeili/meilisearch:v1.55.0@sha256:ff546679970126f8822e15d1b6a06bfbff1f2ce2e43f810cfb5258012f92de5c
+    image: getmeili/meilisearch:v1.56.1@sha256:b7ba431bf6f9b26cc86132798f3640964147a699cf23f026b74c6c05dbb1d60d
     environment:
       MEILI_NO_ANALYTICS: "true"
       MEILI_MASTER_KEY: ${WONTON_SECRET_MEILI_MASTER_KEY}
+      # 升 meilisearch 大版本（1.55→1.56）带着旧数据起不来，得显式准许自动迁移（上游 MEILI_UPGRADE_DB）
+      MEILI_UPGRADE_DB: "true"
     volumes:
       - meilisearch:/meili_data
     healthcheck:
