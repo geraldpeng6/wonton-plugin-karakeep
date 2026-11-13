@@ -2,11 +2,11 @@
 # shellcheck shell=bash
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# 开发环境：compose 文件、密钥、数据，都不提交（.gitignore）。WONTON_DEV_STATE 给冒烟用另一份目录。
+# 开发环境：compose 文件、密钥、数据，都不提交（.gitignore）。WONTON_DEV_STATE 换一份目录（冒烟、路径太长时，见 dev.sh）。
 state="${WONTON_DEV_STATE:-$root/.wonton}"
 env_file="$state/.env"
-# 没有开发环境时，检查和打包用这个核心镜像。
-default_image="ghcr.io/geraldpeng6/wonton-core:beta"
+# 没有开发环境时，检查和打包用这个核心镜像：main 每次合并都会更新，插件跟着主干的规范走，不等发版。
+default_image="ghcr.io/wontonapp/wonton-core:main"
 
 die() {
   echo "$*" >&2
@@ -20,8 +20,36 @@ info() {
 need() {
   local tool
   for tool in "$@"; do
-    command -v "$tool" >/dev/null 2>&1 || die "没有找到 $tool，先装上它（见 https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#准备）"
+    command -v "$tool" >/dev/null 2>&1 || die "没有找到 $tool，先装上它（见 https://github.com/wontonapp/wonton-docs/blob/main/develop.md#准备）"
   done
+}
+
+# 所有 curl 都带超时，网页或接口不回时冒烟和它占的验证栈名额不跟着挂死。网页 120 秒、接口 600 秒；
+# 下载是几十 KB 的套件文件，公网线路卡住时 3 分钟内必须结束，连接阶段 30 秒不通也不等。
+# 调用方（或探针）用同名变量覆盖，单个请求还可以在自己的 curl 参数里再给更短的时间。
+: "${SMOKE_WEB_MAX_TIME:=120}"
+: "${SMOKE_API_MAX_TIME:=600}"
+: "${SMOKE_DOWNLOAD_MAX_TIME:=180}"
+: "${SMOKE_CONNECT_TIMEOUT:=30}"
+
+# 带超时的 curl：<秒数> <地址> [<curl 参数>…]，地址放在最后交给 curl。超时（curl 退出码 28）时在 stderr
+# 写地址和秒数，curl 自己只会给“curl: (28)”；调用方在自己的参数里给的 --max-time 优先，报的也是那个数。
+curl_t() {
+  local secs="$1" url="$2" rc=0
+  shift 2
+  local -a args=("$@")
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      --max-time) secs="${args[$((i + 1))]}" ;;
+      --max-time=*) secs="${args[$i]#--max-time=}" ;;
+    esac
+  done
+  curl -sS --fail-with-body --max-time "$secs" "$@" "$url" || rc=$?
+  if ((rc == 28)); then
+    echo "超时退出（上限 ${secs} 秒）：$url" >&2
+  fi
+  return "$rc"
 }
 
 # 开发环境的一项设置（.wonton/.env），没有时为空。
@@ -45,7 +73,7 @@ need_core_command() {
   usage="$(docker run --rm --network none "$image" plugin 2>&1)" || status=$?
   ((status != 125)) || die "运行不了核心镜像 $image：$usage"
   [[ "$usage" == *"plugin $1"* ]] ||
-    die "核心镜像 $image 太旧，没有 wonton-core plugin $1：换新版本，或用 WONTON_CORE_IMAGE 指定（见 https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#开发环境）"
+    die "核心镜像 $image 太旧，没有 wonton-core plugin $1：换新版本，或用 WONTON_CORE_IMAGE 指定（见 https://github.com/wontonapp/wonton-docs/blob/main/develop.md#开发环境）"
 }
 
 # 在核心镜像里执行 wonton-core：in_core <插件包目录> <参数…>，目录只读挂在 /plugin。
@@ -55,10 +83,19 @@ in_core() {
   docker run --rm --network none -v "$dir:/plugin:ro" "$(core_image)" "$@"
 }
 
-# `plugin check` 输出的第一行去掉“插件 ”，即“<ID> <版本>”。有不合格的地方时 check 的退出码是 1，第一行照常有；
-# 插件包解析不了时为空。
+# 在跑的容器里按名字前缀找一个：running_container <前缀>，找不到时返回 1、标准输出为空。核心给 Bot 服务的
+# 容器名带上 `--<Bot 名>`（plugin/names.rs 的 bot_container），调用方只按 `<插件网络>--<服务>` 找，旧核心
+# 没有这个后缀也能命中；同一个服务有多个 Bot 时取第一个。
+running_container() {
+  local names
+  names="$(docker container ls --filter "name=$1" --format '{{.Names}}')" || return 1
+  grep -x -m1 -E "$1(--[a-z0-9-]+)?" <<<"$names"
+}
+
+# `plugin check` 输出里的「插件 <ID> <版本>」行去掉前缀。核心 4cdfe16 前后会先打一行 tracing
+# （图片助手启动），清单行不再固定是第一行：在全部输出里找。
 manifest_line() {
-  { in_core "$root" plugin check /plugin 2>/dev/null || true; } | sed -n '1s/^插件 //p'
+  { in_core "$root" plugin check /plugin 2>/dev/null || true; } | sed -n 's/^插件 //p' | head -1
 }
 
 plugin_id() {

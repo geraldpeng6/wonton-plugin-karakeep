@@ -31,15 +31,21 @@ mkdir -p "$root/.wonton"
 exec 9>"$root/.wonton/smoke.lock"
 flock -n 9 || die "同一仓库的另一套冒烟正在跑"
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/wonton-smoke.XXXXXX")"
+# 状态目录放短路径：宿主网络插件的中继套接字在 <状态>/data/apps/<插件 id 把 . 换成 ->/relay/webui.sock，unix 套接字
+# 路径最多 107 字节。/tmp/ws.XXXXXX/s 是 16 字节，id 最长 63 时正好 107。不用 TMPDIR：macOS 的 TMPDIR 在
+# /var/folders/… 下，本身就有 40 多字节。
+work="$(mktemp -d /tmp/ws.XXXXXX)"
 copy="$work/repo"
 LOG="$root/.wonton/smoke.log"
 : >"$LOG"
 instance="smoke$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
 SMOKE_DIR="$copy"
-SMOKE_STATE="$copy/.wonton"
+SMOKE_DEV_STATE="$work/s"
+# 数据标记是个空文件（与 e2e 冒烟的约定一致）：插件钩子只当它是文件，不往里建目录。
+SMOKE_STATE="$work/data-marker"
+: >"$SMOKE_STATE"
 SMOKE_INSTANCE="$instance"
-SMOKE_JAR="$copy/.wonton/session.cookies"
+SMOKE_JAR="$SMOKE_DEV_STATE/session.cookies"
 SMOKE_TOOLS="$work/tools.json"
 PROBES_LOG="$LOG"
 
@@ -49,8 +55,8 @@ strip_docker_proxies "$work/docker-config"
 
 cleanup() {
   local image=""
-  image="$(sed -n 's/^WONTON_CORE_IMAGE=//p' "$copy/.wonton/.env" 2>/dev/null | tail -1)"
-  if [[ -f "$copy/.wonton/.env" ]]; then
+  image="$(sed -n 's/^WONTON_CORE_IMAGE=//p' "$SMOKE_DEV_STATE/.env" 2>/dev/null | tail -1)"
+  if [[ -f "$SMOKE_DEV_STATE/.env" ]]; then
     say "清理实例 $instance"
     (cd "$copy" && nice -n 19 timeout 900 scripts/dev.sh purge --yes) >>"$LOG" 2>&1
   fi
@@ -182,7 +188,9 @@ if [[ "$DATA_NA" != 1 ]] && (( DATA_HOOKS )) && [[ -n "$upgrade_from" ]]; then
   if probes_dev_t 600 install --yes "$upgrade_from" >>"$LOG" 2>&1 &&
     probes_status_wait "$PROBES_PLUGIN_ID" 40 >/dev/null; then
     data_upgrade_base=1
-    if probes_data_write; then data_wrote=1; else
+    # 钩子要用网页地址和用户会话：这一轮在主安装之前，probes_run 还没取过、也没登录过。
+    probes_dev session >>"$LOG" 2>&1 || say "升级起点上会话建立失败（data_write 可能 401）"
+    if probes_web_url 升级保数据 && probes_data_write; then data_wrote=1; else
       fail 升级保数据 "data_write 失败（tag $upgrade_from），见 $LOG 末尾：$(tail -c 200 "$LOG" | tr '\n' ' ')"
     fi
   else
@@ -190,8 +198,11 @@ if [[ "$DATA_NA" != 1 ]] && (( DATA_HOOKS )) && [[ -n "$upgrade_from" ]]; then
   fi
 fi
 
-if ! probes_dev install --yes >>"$LOG" 2>&1; then
-  fail 装得上 "dev.sh install --yes 失败，看 $LOG"
+# 装过升级起点时，核心不接受 install 覆盖已装的插件（同一版本号也一样）：升级用 reinstall，保留数据。
+install_cmd=install
+((data_upgrade_base == 1)) && install_cmd=reinstall
+if ! probes_dev "$install_cmd" --yes >>"$LOG" 2>&1; then
+  fail 装得上 "dev.sh $install_cmd --yes 失败，看 $LOG"
   for item in 网页打得开 用户身份能用 工具Bot调得到; do fail "$item" "装不上"; done
   exit 0
 fi

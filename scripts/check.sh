@@ -14,6 +14,8 @@ case "${1:-}" in
   *) die "用法：scripts/check.sh [--official]" ;;
 esac
 need_core_command check
+# 套件自己的命令（logs、diag）的用例：用假 docker，不碰真的 Docker。
+"$root/scripts/dev_test.sh"
 
 # 核心只在清单 spec 太新时报错，并顺带说出支持到哪一版；插件 spec 旧于核心时静默通过，模板照抄旧 spec 也不吭声。
 # 拿一个必报太新的最小清单去问核心支持到哪版（问不到就不提醒），比清单的 spec 旧就提醒一句。
@@ -40,7 +42,7 @@ PY
   if ((a1 > b1 || (a1 == b1 && a2 >= b2))); then
     return 0
   fi
-  echo "提醒：清单是 spec $plugin_spec，核心镜像 $(core_image) 支持到 $core_max；新插件建议写现行版本（字段见 https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md）。" >&2
+  echo "提醒：清单是 spec $plugin_spec，核心镜像 $(core_image) 支持到 $core_max；新插件建议写现行版本（字段见 https://github.com/wontonapp/wonton-docs/blob/main/plugin-spec.md）。" >&2
 }
 
 output="$(mktemp)"
@@ -50,8 +52,13 @@ in_core "$root" plugin check /plugin "$@" >"$output" 2>&1
 status=$?
 set -e
 cat "$output"
-if [[ "${1:-}" == --official && "$(cat "$output")" =~ 插件按规范[[:space:]]+([0-9]+\.[0-9]+).*只支持到[[:space:]]+([0-9]+\.[0-9]+) ]]; then
-  echo "核心镜像 $(core_image) 只支持到 spec ${BASH_REMATCH[2]}，当前清单是 spec ${BASH_REMATCH[1]}；请升级核心，或用 WONTON_CORE_IMAGE 指定支持当前 spec 的镜像。" >&2
+# 清单的 spec 比测试用的核心新：错在核心太旧，不在插件，核心也不会往下逐项检查。单独给一句结论，CI 上再标成
+# 注解，免得读的人以为插件写坏了。
+if [[ "$(cat "$output")" =~ 插件按规范[[:space:]]+([0-9]+\.[0-9]+).*只支持到[[:space:]]+([0-9]+\.[0-9]+) ]]; then
+  verdict="需要核心支持 spec ≥ ${BASH_REMATCH[1]}，测试用的核心 $(core_image) 只到 ${BASH_REMATCH[2]}：换新核心（WONTON_CORE_IMAGE，CI 手动触发时填 core-image），不是插件的问题。"
+  echo "$verdict" >&2
+  [[ -z "${GITHUB_ACTIONS:-}" ]] || echo "::error title=核心镜像太旧::$verdict"
+  exit "$status"
 fi
 spec_reminder
 exit "$status"
