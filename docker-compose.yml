@@ -125,6 +125,8 @@ services:
     environment:
       MEILI_NO_ANALYTICS: "true"
       MEILI_MASTER_KEY: ${WONTON_SECRET_MEILI_MASTER_KEY}
+      # 升 meilisearch 大版本（1.55→1.56）带着旧数据起不来，得显式准许自动迁移（上游 MEILI_UPGRADE_DB）
+      MEILI_UPGRADE_DB: "true"
     volumes:
       - meilisearch:/meili_data
     healthcheck:
